@@ -47,7 +47,7 @@ async function openCell(bt, comp) {
 }
 
 // 出入库
-const adjustForm = ref({ bags: 1, volumeMl: 200, mode: 'IN', operator: '库存岗', remark: '' })
+const adjustForm = ref({ bags: 1, volumeMl: 200, expiryDate: null, mode: 'IN', operator: '库存岗', remark: '' })
 
 async function doAdjust(mode) {
   if (!currentCell.value) return
@@ -58,9 +58,17 @@ async function doAdjust(mode) {
       component: currentCell.value.component,
       bags: adjustForm.value.bags,
       volumeMl: adjustForm.value.volumeMl,
+      // 仅入库时携带指定效期；为空时后端按成分保存期自动推算
+      expiryDate: mode === 'IN' ? adjustForm.value.expiryDate : null,
       mode,
       operator: adjustForm.value.operator,
-      remark: adjustForm.value.remark || (mode === 'IN' ? '手工入库' : '手工出库')
+      remark:
+        adjustForm.value.remark ||
+        (mode === 'IN'
+          ? currentCell.value.component === 'PLASMA'
+            ? '手工入库（血浆格）'
+            : '手工入库'
+          : '手工出库（按最早效期扣减）')
     })
     ElMessage.success(res.message || '库存已调整')
     const r = await getCellBags(currentCell.value.bloodType, currentCell.value.component)
@@ -101,7 +109,8 @@ watch(bloodType, load)
 <template>
   <div v-loading="loading">
     <div class="bc-alert">
-      行 = 8 种血型，列 = 4 种成分；格子按「袋数 / 预警线 / 最近效期」染色。点格子右侧滑出血袋明细并可出入库。
+      行 = 8 种血型，列 = 4 种成分；格子按「袋数 / 预警线 / 最近效期」染色。点格子右侧滑出可用血袋明细并可出入库。
+      <b>血浆格已并入冷沉淀</b>：冷沉淀制备入库后计入血浆格的袋数、U 数与最近效期，出库按最早效期扣减。
     </div>
 
     <div class="bc-panel">
@@ -117,7 +126,9 @@ watch(bloodType, load)
           <thead>
             <tr>
               <th class="row-head">血型</th>
-              <th v-for="c in matrix.components" :key="c.code">{{ c.name }}</th>
+              <th v-for="c in matrix.components" :key="c.code">
+                {{ c.name }}<span v-if="c.code === 'PLASMA'" class="bc-th-sub">含冷沉淀</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -181,12 +192,24 @@ watch(bloodType, load)
     <!-- 格子明细抽屉 -->
     <el-drawer
       v-model="drawer"
-      :title="currentCell ? `${currentCell.bloodType} · ${currentCell.component} 血袋明细` : '血袋明细'"
+      :title="currentCell
+        ? `${currentCell.bloodType} · ${cellOf(currentCell.bloodType, currentCell.component).componentName}${
+            currentCell.component === 'PLASMA' ? '（含冷沉淀）' : ''
+          } 可用血袋明细`
+        : '血袋明细'"
       size="560px"
       direction="rtl"
     >
       <div v-if="currentCell">
         <div class="bc-alert">
+          <template v-if="currentCell.component === 'PLASMA'">
+            血浆格 <b>含冷沉淀</b>：下列可用血袋 = 血浆 + 冷沉淀，袋数 / U 数 / 最近效期与矩阵格一致；
+            出库按全部血袋中最早效期扣减。
+          </template>
+          <template v-else>
+            下列为该格全部可用血袋，袋数 / U 数 / 最近效期与矩阵格一致；出库按最早效期扣减。
+          </template>
+          <br />
           袋数 {{ cellOf(currentCell.bloodType, currentCell.component).bagCount }} ·
           库存 {{ cellOf(currentCell.bloodType, currentCell.component).unitCount }} U ·
           预警线 {{ cellOf(currentCell.bloodType, currentCell.component).warningLine }} 袋
@@ -217,6 +240,9 @@ watch(bloodType, load)
         <div class="bc-panel" style="margin-top: 14px">
           <div class="bc-panel-head">
             <div class="bc-panel-title">出入库</div>
+            <span class="bc-panel-sub" v-if="currentCell.component === 'PLASMA'">
+              入库为血浆袋（冷沉淀由成分制备自动产出并入本格）；出库在血浆 + 冷沉淀中按最早效期扣减
+            </span>
           </div>
           <el-form inline>
             <el-form-item label="袋数">
@@ -225,12 +251,21 @@ watch(bloodType, load)
             <el-form-item label="单袋 ml">
               <el-input-number v-model="adjustForm.volumeMl" :min="30" :max="400" :step="10" />
             </el-form-item>
+            <el-form-item label="效期">
+              <el-date-picker
+                v-model="adjustForm.expiryDate"
+                type="date"
+                value-format="YYYY-MM-DD"
+                placeholder="留空按保存期"
+                style="width: 150px"
+              />
+            </el-form-item>
             <el-form-item label="操作人">
               <el-input v-model="adjustForm.operator" style="width: 120px" />
             </el-form-item>
             <el-form-item>
               <el-button type="primary" @click="doAdjust('IN')">入库</el-button>
-              <el-button type="danger" @click="doAdjust('OUT')">出库</el-button>
+              <el-button type="danger" @click="doAdjust('OUT')">出库（最早效期优先）</el-button>
             </el-form-item>
           </el-form>
         </div>
@@ -238,3 +273,12 @@ watch(bloodType, load)
     </el-drawer>
   </div>
 </template>
+
+<style scoped>
+.bc-th-sub {
+  display: block;
+  font-size: 11px;
+  font-weight: normal;
+  color: #8d6e63;
+}
+</style>

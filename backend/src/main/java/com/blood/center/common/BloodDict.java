@@ -32,6 +32,13 @@ public final class BloodDict {
     /** 冷沉淀属血浆制品，库存并入血浆格统计 */
     private static final Map<String, String> COMPONENT_TO_INVENTORY = Map.of("CRYO", "PLASMA");
 
+    /** 每个库存格实际归并统计的制备成分（血浆格 = 血浆 + 冷沉淀） */
+    private static final Map<String, List<String>> INVENTORY_CELL_COMPONENTS = Map.of(
+            "WHOLE", List.of("WHOLE"),
+            "RBC", List.of("RBC"),
+            "PLASMA", List.of("PLASMA", "CRYO"),
+            "PLATELET", List.of("PLATELET"));
+
     /** 各成分保存天数（用于算失效日期） */
     private static final Map<String, Integer> SHELF_DAYS = Map.of(
             "WHOLE", 35,
@@ -179,6 +186,19 @@ public final class BloodDict {
     /** 库存归属成分：冷沉淀并入血浆 */
     public static String inventoryComponent(String component) {
         return COMPONENT_TO_INVENTORY.getOrDefault(component, component);
+    }
+
+    /**
+     * 库存格实际统计 / 可选的制备成分列表。
+     * 血浆格同时包含 PLASMA 与 CRYO（冷沉淀），其余格子只含本身。
+     */
+    public static List<String> cellComponents(String cellComponent) {
+        return INVENTORY_CELL_COMPONENTS.getOrDefault(cellComponent, List.of(cellComponent));
+    }
+
+    /** 该库存格是否并入了多种制备成分（血浆格为 true） */
+    public static boolean isMergedCell(String cellComponent) {
+        return cellComponents(cellComponent).size() > 1;
     }
 
     public static int shelfDays(String component) {

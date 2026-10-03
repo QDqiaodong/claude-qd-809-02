@@ -73,26 +73,28 @@ public class InventoryService {
     }
 
     /**
-     * 矩阵某一格的血袋明细。
+     * 矩阵某一格的血袋明细：与格子统计同一口径——
+     * 血浆格返回 PLASMA + CRYO 的全部可用袋，按效期升序（与出库扣减顺序一致）。
      */
     @Transactional(readOnly = true)
     public List<BagVO> cellBags(String bloodType, String component) {
         if (!BloodDict.isValidBloodType(bloodType)) {
             throw new BizException("未知的血型：" + bloodType);
         }
-        if (!BloodDict.isValidComponent(component)) {
-            throw new BizException("未知的血液成分：" + component);
+        if (!BloodDict.COMPONENTS.contains(component)) {
+            throw new BizException("未知的库存成分格：" + component);
         }
-        List<BloodBag> bags = bagRepository.findByBloodTypeAndComponentOrderByExpiryDateAsc(bloodType, component);
         List<BagVO> vos = new ArrayList<>();
-        for (BloodBag bag : bags) {
+        for (BloodBag bag : availableBagsOfCell(bloodType, component)) {
             vos.add(toVO(bag));
         }
         return vos;
     }
 
     /**
-     * 格子出入库：IN 入库（生成血袋并计入库存），OUT 出库（按最早效期扣减并写报废记录）。
+     * 格子出入库：IN 入库（生成血袋并计入库存），OUT 出库（按格子内最早效期扣减并写报废记录）。
+     * 血浆格入库默认生成 PLASMA 袋；制备产出的冷沉淀（CRYO）同样落入本格。
+     * 血浆格出库在「血浆 + 冷沉淀」全部可用袋中按最早效期扣减，与页面所示最近效期、可选范围一致。
      */
     @Transactional
     public InventoryCellVO adjust(InventoryAdjustRequest request) {
@@ -102,6 +104,7 @@ public class InventoryService {
         if (!BloodDict.isValidComponent(request.component())) {
             throw new BizException("未知的血液成分：" + request.component());
         }
+        String cell = BloodDict.inventoryComponent(request.component());
         int bags = request.bags() == null ? 1 : request.bags();
         if (bags <= 0) {
             throw new BizException("出入库袋数必须大于 0");
@@ -120,7 +123,9 @@ public class InventoryService {
                 bag.setComponent(request.component());
                 bag.setVolumeMl(volume);
                 bag.setCollectDate(today.minusDays(1));
-                bag.setExpiryDate(today.plusDays(BloodDict.shelfDays(request.component())));
+                bag.setExpiryDate(request.expiryDate() == null
+                        ? today.plusDays(BloodDict.shelfDays(request.component()))
+                        : request.expiryDate());
                 bag.setStatus("AVAILABLE");
                 bag.setDonorName("手工入库");
                 bag.setCreatedAt(LocalDateTime.now());
@@ -128,11 +133,11 @@ public class InventoryService {
             }
             redis.opsForValue().increment(INBOUND_COUNTER, bags);
         } else if ("OUT".equals(mode)) {
-            List<BloodBag> available = bagRepository
-                    .findByBloodTypeAndComponentOrderByExpiryDateAsc(request.bloodType(), request.component())
-                    .stream().filter(b -> "AVAILABLE".equals(b.getStatus())).toList();
+            // 出库只认库存格：不论请求里传 PLASMA 还是 CRYO，都在合并后的同一份可用袋中按最早效期扣减
+            List<BloodBag> available = availableBagsOfCell(request.bloodType(), cell);
             if (available.size() < bags) {
-                throw new BizException(request.bloodType() + " " + BloodDict.componentName(request.component())
+                throw new BizException(request.bloodType() + " " + BloodDict.componentName(cell)
+                        + (BloodDict.isMergedCell(cell) ? "（含冷沉淀）" : "")
                         + " 可用血袋仅 " + available.size() + " 袋，不足出库 " + bags + " 袋");
             }
             for (int i = 0; i < bags; i++) {
@@ -147,10 +152,10 @@ public class InventoryService {
         } else {
             throw new BizException("未知的出入库方向：" + request.mode());
         }
-        syncInventory(request.bloodType(), request.component());
+        syncInventory(request.bloodType(), cell);
         return toCell(inventoryRepository
-                .findByBloodTypeAndComponent(request.bloodType(), request.component()).orElse(null),
-                request.bloodType(), request.component());
+                .findByBloodTypeAndComponent(request.bloodType(), cell).orElse(null),
+                request.bloodType(), cell);
     }
 
     /**
@@ -191,18 +196,49 @@ public class InventoryService {
     // ---------------- 内部方法 ----------------
 
     /**
-     * 依据可用血袋重算某一格的袋数 / U 数 / 最近效期（冷沉淀并入血浆格）。
+     * 依据可用血袋重算某一格的袋数 / U 数 / 最近效期。
+     * 冷沉淀（CRYO）并入血浆格：血浆格的可用袋 = PLASMA + CRYO，最近效期取两者合并后最早的一袋。
      */
     @Transactional
     public void syncInventory(String bloodType, String component) {
-        String cell = BloodDict.inventoryComponent(component);
-        List<BloodBag> bags = new ArrayList<>(
-                bagRepository.findByBloodTypeAndComponentOrderByExpiryDateAsc(bloodType, cell));
-        if (!cell.equals(component) || "PLASMA".equals(cell)) {
-            bags.addAll(bagRepository.findByBloodTypeAndComponentOrderByExpiryDateAsc(bloodType, "CRYO"));
+        reconcileCell(bloodType, BloodDict.inventoryComponent(component));
+    }
+
+    /**
+     * 全量重算全部「血型 × 成分」库存格。
+     * 服务启动时执行一次：任何历史漂移（种子数据未计冷沉淀、手工改库、漏同步）都会被拉回到
+     * 与血袋明细一致的状态，保证刷新 / 重启后矩阵、明细、记录口径相同。
+     */
+    @Transactional
+    public int reconcileAll() {
+        int cells = 0;
+        for (String bloodType : BloodDict.BLOOD_TYPES) {
+            for (String component : BloodDict.COMPONENTS) {
+                reconcileCell(bloodType, component);
+                cells++;
+            }
         }
-        List<BloodBag> available = bags.stream().filter(b -> "AVAILABLE".equals(b.getStatus())).toList();
+        return cells;
+    }
+
+    /**
+     * 库存格背后真正可用的血袋（血浆格 = 血浆 + 冷沉淀），按效期升序、同效期按袋号稳定排序。
+     * 矩阵统计、格子明细、FIFO 出库共用此方法，从根上保证三处口径一致。
+     */
+    private List<BloodBag> availableBagsOfCell(String bloodType, String cellComponent) {
+        return bagRepository.findByBloodTypeAndComponentInAndStatusOrderByExpiryDateAscIdAsc(
+                bloodType, BloodDict.cellComponents(cellComponent), "AVAILABLE");
+    }
+
+    /** 重算单个库存格（入参必须是矩阵格成分：WHOLE/RBC/PLASMA/PLATELET） */
+    private void reconcileCell(String bloodType, String cell) {
+        List<BloodBag> available = availableBagsOfCell(bloodType, cell);
         BloodInventory inv = inventoryRepository.findByBloodTypeAndComponent(bloodType, cell).orElse(null);
+        // 空格不建行：全新库没有任何血袋时不制造 32 行 0 库存（否则顶部「低于预警线」KPI 恒为 32）；
+        // 已有行则照常归零修正，保证报废 / 出库清空后矩阵仍与明细一致。
+        if (inv == null && available.isEmpty()) {
+            return;
+        }
         if (inv == null) {
             inv = new BloodInventory();
             inv.setBloodType(bloodType);
@@ -210,7 +246,8 @@ public class InventoryService {
             inv.setWarningLine(defaultWarningLine(cell));
         }
         inv.setBagCount(available.size());
-        inv.setUnitCount(available.stream().mapToInt(b -> BloodDict.unitsOf(b.getVolumeMl() == null ? 0 : b.getVolumeMl())).sum());
+        inv.setUnitCount(available.stream()
+                .mapToInt(b -> BloodDict.unitsOf(b.getVolumeMl() == null ? 0 : b.getVolumeMl())).sum());
         inv.setNearestExpiry(available.isEmpty() ? null : available.get(0).getExpiryDate());
         inv.setUpdatedAt(LocalDateTime.now());
         inventoryRepository.save(inv);

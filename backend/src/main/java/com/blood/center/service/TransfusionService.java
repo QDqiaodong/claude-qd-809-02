@@ -13,7 +13,6 @@ import org.springframework.transaction.annotation.Transactional;
 import com.blood.center.common.BizException;
 import com.blood.center.common.BloodDict;
 import com.blood.center.domain.BloodBag;
-import com.blood.center.domain.BloodInventory;
 import com.blood.center.domain.CrossMatch;
 import com.blood.center.domain.HospitalRequest;
 import com.blood.center.domain.TestSample;
@@ -25,7 +24,6 @@ import com.blood.center.dto.MatchResultRequest;
 import com.blood.center.dto.RequestCreateRequest;
 import com.blood.center.dto.RequestVO;
 import com.blood.center.repository.BloodBagRepository;
-import com.blood.center.repository.BloodInventoryRepository;
 import com.blood.center.repository.CrossMatchRepository;
 import com.blood.center.repository.HospitalRequestRepository;
 import com.blood.center.repository.TestSampleRepository;
@@ -41,16 +39,14 @@ public class TransfusionService {
     private final HospitalRequestRepository requestRepository;
     private final CrossMatchRepository matchRepository;
     private final BloodBagRepository bagRepository;
-    private final BloodInventoryRepository inventoryRepository;
     private final TestSampleRepository sampleRepository;
 
     public TransfusionService(HospitalRequestRepository requestRepository, CrossMatchRepository matchRepository,
-                              BloodBagRepository bagRepository, BloodInventoryRepository inventoryRepository,
+                              BloodBagRepository bagRepository,
                               TestSampleRepository sampleRepository) {
         this.requestRepository = requestRepository;
         this.matchRepository = matchRepository;
         this.bagRepository = bagRepository;
-        this.inventoryRepository = inventoryRepository;
         this.sampleRepository = sampleRepository;
     }
 
@@ -237,10 +233,13 @@ public class TransfusionService {
                     + BloodDict.sampleStatusName(sampleStatus) + "」，检验未放行的血液不允许发血");
         }
         int units = match.getUnitsU() == null ? 0 : match.getUnitsU();
-        BloodInventory inv = inventoryRepository
-                .findByBloodTypeAndComponent(match.getBloodType(), BloodDict.inventoryComponent(match.getComponent()))
-                .orElse(null);
-        int stock = inv == null || inv.getUnitCount() == null ? 0 : inv.getUnitCount();
+        // 库存口径与可选血袋一致：只数该血型 + 该成分（冷沉淀单独计）真正 AVAILABLE 的袋折 U，
+        // 不读可能滞后的 blood_inventory 汇总行，库存不足绝不误判。
+        int stock = bagRepository
+                .findByBloodTypeAndComponentInAndStatusOrderByExpiryDateAscIdAsc(
+                        match.getBloodType(), List.of(match.getComponent()), "AVAILABLE").stream()
+                .mapToInt(b -> BloodDict.unitsOf(b.getVolumeMl() == null ? 0 : b.getVolumeMl()))
+                .sum();
         if (stock < units) {
             throw new BizException(match.getBloodType() + " " + BloodDict.componentName(match.getComponent())
                     + " 库存仅 " + stock + " U，本次需发 " + units + " U，缺口 " + (units - stock) + " U");

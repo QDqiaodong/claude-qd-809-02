@@ -15,7 +15,12 @@ public interface BloodBagRepository extends JpaRepository<BloodBag, Long> {
 
     Optional<BloodBag> findByBagNo(String bagNo);
 
-    List<BloodBag> findByBloodTypeAndComponentOrderByExpiryDateAsc(String bloodType, String component);
+    /**
+     * 某库存格内真正可用的血袋：按成分列表过滤（血浆格含 PLASMA + CRYO），只看 AVAILABLE。
+     * 矩阵格统计、格子明细、出库可选范围必须共用这一份口径，避免冷沉淀在各处被漏算 / 重复算。
+     */
+    List<BloodBag> findByBloodTypeAndComponentInAndStatusOrderByExpiryDateAscIdAsc(
+            String bloodType, List<String> components, String status);
 
     List<BloodBag> findByBloodTypeOrderByExpiryDateAsc(String bloodType);
 
