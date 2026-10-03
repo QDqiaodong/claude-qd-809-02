@@ -165,6 +165,10 @@ public class BloodEventListener {
         inventoryService.syncInventory(sample.getBloodType(), "RBC");
         inventoryService.syncInventory(sample.getBloodType(), "PLASMA");
         inventoryService.syncInventory(sample.getBloodType(), "PLATELET");
+        // 冷沉淀独立成格：制备产出 CRYO 后必须重算冷沉淀格，否则矩阵不出现新入库袋
+        if (split[3] > 0) {
+            inventoryService.syncInventory(sample.getBloodType(), "CRYO");
+        }
         log.info("[领域事件] 标本 {} 放行，自动生成制备批次 {}，产出 {} 袋",
                 sample.getBarcode(), saved.getBatchNo(), produced.size());
     }
@@ -243,8 +247,10 @@ public class BloodEventListener {
         bag.setBloodType(bloodType);
         bag.setComponent(component);
         bag.setVolumeMl(volume);
-        bag.setCollectDate(collection.getCollectDate() == null ? LocalDate.now() : collection.getCollectDate());
-        bag.setExpiryDate(LocalDate.now().plusDays(BloodDict.shelfDays(component)));
+        LocalDate collectDate = collection.getCollectDate() == null ? LocalDate.now() : collection.getCollectDate();
+        bag.setCollectDate(collectDate);
+        // 效期按「采集日期 + 该成分保存天数」，而非制备当天；否则补录历史采血时效期会被错误顺延
+        bag.setExpiryDate(collectDate.plusDays(BloodDict.shelfDays(component)));
         bag.setStatus("AVAILABLE");
         bag.setDonorName(collection.getDonor() == null ? null : collection.getDonor().getName());
         bag.setCollection(collection);

@@ -36,6 +36,8 @@ function cellOf(bt, comp) {
 
 async function openCell(bt, comp) {
   currentCell.value = { bloodType: bt, component: comp }
+  // 单袋默认容量按成分带出（冷沉淀 30ml 等），避免手工入库时 U 数被错误容量带偏
+  adjustForm.value.volumeMl = defaultVolumeOf(comp)
   try {
     const res = await getCellBags(bt, comp)
     bags.value = res.data || []
@@ -44,6 +46,18 @@ async function openCell(bt, comp) {
     bags.value = []
   }
   drawer.value = true
+}
+
+function defaultVolumeOf(comp) {
+  if (comp === 'WHOLE') return 400
+  if (comp === 'PLASMA') return 220
+  if (comp === 'PLATELET') return 250
+  if (comp === 'CRYO') return 30
+  return 200
+}
+
+function nameOf(comp) {
+  return { WHOLE: '全血', RBC: '红细胞悬液', PLASMA: '血浆', PLATELET: '血小板', CRYO: '冷沉淀' }[comp] || comp
 }
 
 // 出入库
@@ -101,7 +115,9 @@ watch(bloodType, load)
 <template>
   <div v-loading="loading">
     <div class="bc-alert">
-      行 = 8 种血型，列 = 4 种成分；格子按「袋数 / 预警线 / 最近效期」染色。点格子右侧滑出血袋明细并可出入库。
+      行 = 8 种血型，列 = 5 种成分（全血 / 红细胞 / 血浆 / 血小板 / 冷沉淀，冷沉淀独立成格）；
+      格子按「袋数 / 预警线 / 最近效期」染色。点格子右侧滑出可用血袋明细并可出入库；
+      出库严格按明细中最早效期 FIFO 扣减，库存不足直接拦截。
     </div>
 
     <div class="bc-panel">
@@ -181,15 +197,20 @@ watch(bloodType, load)
     <!-- 格子明细抽屉 -->
     <el-drawer
       v-model="drawer"
-      :title="currentCell ? `${currentCell.bloodType} · ${currentCell.component} 血袋明细` : '血袋明细'"
-      size="560px"
+      :title="currentCell ? `${currentCell.bloodType} · ${nameOf(currentCell.component)}（${currentCell.component}）可用血袋明细` : '血袋明细'"
+      size="600px"
       direction="rtl"
     >
       <div v-if="currentCell">
         <div class="bc-alert">
-          袋数 {{ cellOf(currentCell.bloodType, currentCell.component).bagCount }} ·
+          可用 {{ cellOf(currentCell.bloodType, currentCell.component).bagCount }} 袋 ·
           库存 {{ cellOf(currentCell.bloodType, currentCell.component).unitCount }} U ·
-          预警线 {{ cellOf(currentCell.bloodType, currentCell.component).warningLine }} 袋
+          预警线 {{ cellOf(currentCell.bloodType, currentCell.component).warningLine }} 袋 ·
+          最近效期 {{ cellOf(currentCell.bloodType, currentCell.component).nearestExpiry || '无库存' }}
+          <div style="margin-top: 4px; font-size: 12px">
+            明细仅含可用血袋（按效期升序，首袋即矩阵格所示最近效期 / 出库下一袋）；
+            已发出 / 已报废 / 隔离袋见报废记录与追溯台。
+          </div>
         </div>
         <el-table :data="bags" size="small" stripe height="360">
           <el-table-column prop="bagNo" label="袋号" width="130" />
@@ -213,6 +234,7 @@ watch(bloodType, load)
             </template>
           </el-table-column>
         </el-table>
+        <el-empty v-if="!bags.length" description="该格暂无可用血袋" :image-size="60" />
 
         <div class="bc-panel" style="margin-top: 14px">
           <div class="bc-panel-head">

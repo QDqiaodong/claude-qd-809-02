@@ -31,7 +31,7 @@ public class BloodInventory {
     @Column(name = "blood_type", nullable = false, length = 4)
     private String bloodType;
 
-    /** WHOLE 全血 / RBC 红细胞 / PLASMA 血浆 / PLATELET 血小板 */
+    /** WHOLE 全血 / RBC 红细胞 / PLASMA 血浆 / PLATELET 血小板 / CRYO 冷沉淀（各成分独立成格） */
     @Column(name = "component", nullable = false, length = 8)
     private String component;
 

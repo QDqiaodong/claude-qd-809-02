@@ -334,7 +334,7 @@ public class ReactionService {
                     linkRepository.save(link);
                     writeLedger(event, bag.getId(), bag.getBagNo(), "SCRAP",
                             "确认风险：同源血袋转报废并扣减库存", reviewer, now);
-                    String cell = bag.getBloodType() + "|" + BloodDict.inventoryComponent(bag.getComponent());
+                    String cell = bag.getBloodType() + "|" + bag.getComponent();
                     if (!affectedCells.contains(cell)) {
                         affectedCells.add(cell);
                     }
@@ -409,7 +409,7 @@ public class ReactionService {
                     released++;
                     writeLedger(event, bagId, bag.getBagNo(), "RELEASE",
                             "排除关联：血袋恢复可用并回补库存", reviewer, now);
-                    String cell = bag.getBloodType() + "|" + BloodDict.inventoryComponent(bag.getComponent());
+                    String cell = bag.getBloodType() + "|" + bag.getComponent();
                     if (!affectedCells.contains(cell)) {
                         affectedCells.add(cell);
                     }
@@ -479,7 +479,7 @@ public class ReactionService {
                         "并发复核结束后补扫：该血袋所有关联事件均已排除关联，满足释放条件，恢复可用",
                         same.getEvent().getReviewer(), now);
             }
-            String cell = bag.getBloodType() + "|" + BloodDict.inventoryComponent(bag.getComponent());
+            String cell = bag.getBloodType() + "|" + bag.getComponent();
             if (!affectedCells.contains(cell)) {
                 affectedCells.add(cell);
             }
@@ -547,7 +547,7 @@ public class ReactionService {
                     link.setLinkStatus("QUARANTINED");
                     link.setNote("同源血袋，事件建立即隔离");
                     isolated++;
-                    String cell = bag.getBloodType() + "|" + BloodDict.inventoryComponent(bag.getComponent());
+                    String cell = bag.getBloodType() + "|" + bag.getComponent();
                     if (!affectedCells.contains(cell)) {
                         affectedCells.add(cell);
                     }
@@ -563,7 +563,7 @@ public class ReactionService {
                         link.setLinkStatus("QUARANTINED");
                         link.setNote("血袋已先被其他反应事件隔离，本事件共同持有隔离");
                         isolated++;
-                        String cell = bag.getBloodType() + "|" + BloodDict.inventoryComponent(bag.getComponent());
+                        String cell = bag.getBloodType() + "|" + bag.getComponent();
                         if (!affectedCells.contains(cell)) {
                             affectedCells.add(cell);
                         }
@@ -585,7 +585,7 @@ public class ReactionService {
                 link.setLinkStatus("QUARANTINED");
                 link.setNote("血袋已先被其他反应事件隔离，本事件共同持有隔离");
                 isolated++;
-                String cell = bag.getBloodType() + "|" + BloodDict.inventoryComponent(bag.getComponent());
+                String cell = bag.getBloodType() + "|" + bag.getComponent();
                 if (!affectedCells.contains(cell)) {
                     affectedCells.add(cell);
                 }

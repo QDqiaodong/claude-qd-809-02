@@ -237,8 +237,10 @@ public class TransfusionService {
                     + BloodDict.sampleStatusName(sampleStatus) + "」，检验未放行的血液不允许发血");
         }
         int units = match.getUnitsU() == null ? 0 : match.getUnitsU();
+        // 库存按血袋成分 1:1 对应独立格（冷沉淀不再并入血浆），且该格 U 数只由可用血袋汇总，
+        // 避免「血浆袋不够却用冷沉淀凑数」之类的误判。
         BloodInventory inv = inventoryRepository
-                .findByBloodTypeAndComponent(match.getBloodType(), BloodDict.inventoryComponent(match.getComponent()))
+                .findByBloodTypeAndComponent(match.getBloodType(), match.getComponent())
                 .orElse(null);
         int stock = inv == null || inv.getUnitCount() == null ? 0 : inv.getUnitCount();
         if (stock < units) {

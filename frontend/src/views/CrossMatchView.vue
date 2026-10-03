@@ -335,6 +335,7 @@ watch(bloodType, load)
             <el-option label="红细胞悬液" value="RBC" />
             <el-option label="血浆" value="PLASMA" />
             <el-option label="血小板" value="PLATELET" />
+            <el-option label="冷沉淀" value="CRYO" />
           </el-select>
         </el-form-item>
         <el-form-item label="申请 U 数">

@@ -51,7 +51,7 @@ public class InventoryService {
     }
 
     /**
-     * 二维库存矩阵：8 种血型 × 4 种成分，低于预警线 / 近效期按深浅染色。
+     * 二维库存矩阵：8 种血型 × 5 种成分（冷沉淀独立成格），低于预警线 / 近效期按深浅染色。
      */
     @Transactional(readOnly = true)
     public InventoryMatrixVO matrix(String bloodType) {
@@ -73,7 +73,9 @@ public class InventoryService {
     }
 
     /**
-     * 矩阵某一格的血袋明细。
+     * 矩阵某一格的血袋明细：只列「可用」血袋并按效期升序。
+     * 口径与矩阵统计完全一致——矩阵的袋数 / U 数 / 最近效期正是这张明细表的
+     * 行数 / U 数合计 / 首行效期；已发出、已报废、同源隔离血袋不出现在可用明细里。
      */
     @Transactional(readOnly = true)
     public List<BagVO> cellBags(String bloodType, String component) {
@@ -86,6 +88,9 @@ public class InventoryService {
         List<BloodBag> bags = bagRepository.findByBloodTypeAndComponentOrderByExpiryDateAsc(bloodType, component);
         List<BagVO> vos = new ArrayList<>();
         for (BloodBag bag : bags) {
+            if (!"AVAILABLE".equals(bag.getStatus())) {
+                continue;
+            }
             vos.add(toVO(bag));
         }
         return vos;
@@ -128,12 +133,15 @@ public class InventoryService {
             }
             redis.opsForValue().increment(INBOUND_COUNTER, bags);
         } else if ("OUT".equals(mode)) {
+            // 出库 FIFO：与格内明细同为「可用血袋按效期升序」，逐袋取最早效期，
+            // 与矩阵格上显示的「最近效期」是同一首袋；矩阵显示多少可用袋就只能出多少。
             List<BloodBag> available = bagRepository
                     .findByBloodTypeAndComponentOrderByExpiryDateAsc(request.bloodType(), request.component())
                     .stream().filter(b -> "AVAILABLE".equals(b.getStatus())).toList();
             if (available.size() < bags) {
                 throw new BizException(request.bloodType() + " " + BloodDict.componentName(request.component())
-                        + " 可用血袋仅 " + available.size() + " 袋，不足出库 " + bags + " 袋");
+                        + " 可用血袋仅 " + available.size() + " 袋，不足出库 " + bags + " 袋，缺口 "
+                        + (bags - available.size()) + " 袋");
             }
             for (int i = 0; i < bags; i++) {
                 BloodBag bag = available.get(i);
@@ -191,23 +199,21 @@ public class InventoryService {
     // ---------------- 内部方法 ----------------
 
     /**
-     * 依据可用血袋重算某一格的袋数 / U 数 / 最近效期（冷沉淀并入血浆格）。
+     * 依据可用血袋重算某一格的袋数 / U 数 / 最近效期。
+     * 每种成分独立成格（冷沉淀不再并入血浆）：只统计该成分的 AVAILABLE 血袋，
+     * QUARANTINED 同源隔离 / ISSUED 已发出 / SCRAPPED 已报废均不计；
+     * 血袋已按失效日期升序，取首袋即「最近效期」，与页面出库 FIFO 扣减口径一致。
      */
     @Transactional
     public void syncInventory(String bloodType, String component) {
-        String cell = BloodDict.inventoryComponent(component);
-        List<BloodBag> bags = new ArrayList<>(
-                bagRepository.findByBloodTypeAndComponentOrderByExpiryDateAsc(bloodType, cell));
-        if (!cell.equals(component) || "PLASMA".equals(cell)) {
-            bags.addAll(bagRepository.findByBloodTypeAndComponentOrderByExpiryDateAsc(bloodType, "CRYO"));
-        }
+        List<BloodBag> bags = bagRepository.findByBloodTypeAndComponentOrderByExpiryDateAsc(bloodType, component);
         List<BloodBag> available = bags.stream().filter(b -> "AVAILABLE".equals(b.getStatus())).toList();
-        BloodInventory inv = inventoryRepository.findByBloodTypeAndComponent(bloodType, cell).orElse(null);
+        BloodInventory inv = inventoryRepository.findByBloodTypeAndComponent(bloodType, component).orElse(null);
         if (inv == null) {
             inv = new BloodInventory();
             inv.setBloodType(bloodType);
-            inv.setComponent(cell);
-            inv.setWarningLine(defaultWarningLine(cell));
+            inv.setComponent(component);
+            inv.setWarningLine(defaultWarningLine(component));
         }
         inv.setBagCount(available.size());
         inv.setUnitCount(available.stream().mapToInt(b -> BloodDict.unitsOf(b.getVolumeMl() == null ? 0 : b.getVolumeMl())).sum());
@@ -216,11 +222,27 @@ public class InventoryService {
         inventoryRepository.save(inv);
     }
 
+    /**
+     * 启动全量对账：按血袋事实重建全部「血型 × 成分」库存格。
+     * 矩阵统计（blood_inventory）只是血袋明细（blood_bag）的物化汇总，任何漂移
+     * （旧版并入血浆的冷沉淀、手工改库、历史种子误差）都在启动时以血袋为准纠正，
+     * 保证刷新或服务重启后矩阵、明细与记录一致。
+     */
+    @Transactional
+    public int reconcileAll() {
+        int cells = 0;
+        for (String bloodType : BloodDict.BLOOD_TYPES) {
+            for (String component : BloodDict.COMPONENTS) {
+                syncInventory(bloodType, component);
+                cells++;
+            }
+        }
+        return cells;
+    }
+
     private int defaultWarningLine(String component) {
         return switch (component) {
-            case "WHOLE" -> 2;
-            case "RBC" -> 2;
-            case "PLASMA" -> 2;
+            case "WHOLE", "RBC", "PLASMA", "PLATELET", "CRYO" -> 2;
             default -> 2;
         };
     }
@@ -230,6 +252,7 @@ public class InventoryService {
             case "WHOLE" -> 400;
             case "PLASMA" -> 220;
             case "PLATELET" -> 250;
+            case "CRYO" -> 30;
             default -> 200;
         };
     }

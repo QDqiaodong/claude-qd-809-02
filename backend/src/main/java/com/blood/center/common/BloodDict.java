@@ -16,8 +16,12 @@ public final class BloodDict {
     /** 8 种血型（顶部导航维度） */
     public static final List<String> BLOOD_TYPES = List.of("A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-");
 
-    /** 库存二维矩阵的 4 种成分 */
-    public static final List<String> COMPONENTS = List.of("WHOLE", "RBC", "PLASMA", "PLATELET");
+    /**
+     * 库存二维矩阵的 5 种成分。
+     * 冷沉淀（CRYO）独立成格：与血浆是不同制品（临床用途、效期管理、出入库口径均不同），
+     * 各自独立统计袋数 / U 数 / 最近效期，独立预警线与近效期提示；不再并入血浆格。
+     */
+    public static final List<String> COMPONENTS = List.of("WHOLE", "RBC", "PLASMA", "PLATELET", "CRYO");
 
     /** 制备可分离出的成分（含冷沉淀） */
     public static final List<String> PREP_COMPONENTS = List.of("RBC", "PLASMA", "PLATELET", "CRYO");
@@ -28,9 +32,6 @@ public final class BloodDict {
             "PLASMA", "血浆",
             "PLATELET", "血小板",
             "CRYO", "冷沉淀");
-
-    /** 冷沉淀属血浆制品，库存并入血浆格统计 */
-    private static final Map<String, String> COMPONENT_TO_INVENTORY = Map.of("CRYO", "PLASMA");
 
     /** 各成分保存天数（用于算失效日期） */
     private static final Map<String, Integer> SHELF_DAYS = Map.of(
@@ -174,11 +175,6 @@ public final class BloodDict {
 
     public static String componentName(String component) {
         return component == null ? "" : COMPONENT_NAME.getOrDefault(component, component);
-    }
-
-    /** 库存归属成分：冷沉淀并入血浆 */
-    public static String inventoryComponent(String component) {
-        return COMPONENT_TO_INVENTORY.getOrDefault(component, component);
     }
 
     public static int shelfDays(String component) {
