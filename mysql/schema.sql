@@ -1,0 +1,510 @@
+-- 血站 · 采血供血与血液库存管理
+-- ddl-auto=none，表结构与种子数据全部在这里建好（mysql/Dockerfile 在构建期执行本文件）
+SET NAMES utf8mb4;
+
+-- ========================= 建表 =========================
+DROP TABLE IF EXISTS test_retest_round;
+DROP TABLE IF EXISTS reaction_ledger;
+DROP TABLE IF EXISTS reaction_bag_link;
+DROP TABLE IF EXISTS transfusion_reaction;
+DROP TABLE IF EXISTS cross_match;
+DROP TABLE IF EXISTS hospital_request;
+DROP TABLE IF EXISTS scrap_record;
+DROP TABLE IF EXISTS blood_bag;
+DROP TABLE IF EXISTS blood_inventory;
+DROP TABLE IF EXISTS preparation_batch;
+DROP TABLE IF EXISTS test_sample;
+DROP TABLE IF EXISTS collection_record;
+DROP TABLE IF EXISTS donor;
+
+-- 献血者
+CREATE TABLE donor (
+    id                BIGINT       NOT NULL AUTO_INCREMENT,
+    donor_no          VARCHAR(32)  NOT NULL COMMENT '献血者编号',
+    name              VARCHAR(64)  NOT NULL COMMENT '姓名',
+    gender            VARCHAR(8)   NOT NULL COMMENT '性别 男/女',
+    age               INT          NOT NULL COMMENT '年龄',
+    blood_type        VARCHAR(4)   NOT NULL COMMENT '血型 A+/A-/B+/B-/O+/O-/AB+/AB-',
+    id_card_no        VARCHAR(32)  NOT NULL COMMENT '证件号',
+    phone             VARCHAR(20)  NULL COMMENT '联系电话',
+    weight_kg         DECIMAL(5,1) NOT NULL COMMENT '体重 kg，用于计算单次采血上限',
+    donation_count    INT          NOT NULL DEFAULT 0 COMMENT '既往献血次数',
+    total_volume_ml   INT          NOT NULL DEFAULT 0 COMMENT '累计献血量 ml',
+    defer_until       DATE         NULL COMMENT '暂缓献血截止日期',
+    last_donation_date DATE        NULL COMMENT '最近一次献血日期',
+    created_at        DATETIME     NULL COMMENT '建档时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_donor_no (donor_no),
+    UNIQUE KEY uk_donor_id_card (id_card_no),
+    KEY idx_donor_blood (blood_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='献血者';
+
+-- 采血记录（采血位 / 采血量 / 采血护士 / 状态）
+CREATE TABLE collection_record (
+    id           BIGINT      NOT NULL AUTO_INCREMENT,
+    collect_no   VARCHAR(32) NOT NULL COMMENT '采血单号',
+    donor_id     BIGINT      NOT NULL COMMENT '献血者',
+    station_code VARCHAR(8)  NOT NULL COMMENT '采血位 P01~P12',
+    volume_ml    INT         NOT NULL COMMENT '采血量 ml',
+    collect_date DATE        NOT NULL COMMENT '采血日期',
+    nurse        VARCHAR(32) NOT NULL COMMENT '采血护士',
+    status       VARCHAR(16) NOT NULL COMMENT 'COLLECTING 采血中/DONE 已完成/ABNORMAL 异常',
+    created_at   DATETIME    NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_collect_no (collect_no),
+    KEY idx_collect_donor (donor_id),
+    KEY idx_collect_station (station_code),
+    KEY idx_collect_date (collect_date),
+    CONSTRAINT fk_collect_donor FOREIGN KEY (donor_id) REFERENCES donor (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='采血记录';
+
+-- 标本检验
+CREATE TABLE test_sample (
+    id              BIGINT       NOT NULL AUTO_INCREMENT,
+    barcode         VARCHAR(32)  NOT NULL COMMENT '标本条码',
+    collection_id   BIGINT       NOT NULL COMMENT '对应采血记录',
+    donor_name      VARCHAR(64)  NULL COMMENT '献血者姓名',
+    blood_type      VARCHAR(4)   NOT NULL COMMENT '血型',
+    alt_value       DECIMAL(6,2) NULL COMMENT 'ALT U/L',
+    hb_value        DECIMAL(5,1) NULL COMMENT '血红蛋白 g/L',
+    hbv_result      VARCHAR(8)   NULL COMMENT 'HBV NEGATIVE/POSITIVE',
+    hcv_result      VARCHAR(8)   NULL COMMENT 'HCV NEGATIVE/POSITIVE',
+    hiv_result      VARCHAR(8)   NULL COMMENT 'HIV NEGATIVE/POSITIVE',
+    syphilis_result VARCHAR(8)   NULL COMMENT '梅毒 NEGATIVE/POSITIVE',
+    reviewer        VARCHAR(32)  NULL COMMENT '复核人',
+    status          VARCHAR(16)  NOT NULL COMMENT 'PENDING 待检/TESTING 检测中/RELEASED 已放行/SCRAPPED 报废',
+    tested_at       DATETIME     NULL COMMENT '检测时间',
+    released_at     DATETIME     NULL COMMENT '放行时间',
+    created_at      DATETIME     NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_sample_barcode (barcode),
+    KEY idx_sample_collection (collection_id),
+    KEY idx_sample_status (status),
+    CONSTRAINT fk_sample_collection FOREIGN KEY (collection_id) REFERENCES collection_record (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='标本检验';
+
+-- 标本复测轮次（每轮只复测一个项目；test_sample 上的初检值视为第 0 轮，永不覆盖）
+-- decision PENDING 待复核 / ADOPTED 采用（本轮为该项目当前有效结果）/ REJECTED 拒绝（沿用上一有效轮）
+CREATE TABLE test_retest_round (
+    id               BIGINT       NOT NULL AUTO_INCREMENT,
+    sample_id        BIGINT       NOT NULL COMMENT '标本',
+    item_code        VARCHAR(16)  NOT NULL COMMENT '复测项目 ALT/HB/HBV/HCV/HIV/SYPHILIS',
+    round_no         INT          NOT NULL COMMENT '该项目复测轮次，从 1 开始',
+    new_value        DECIMAL(6,2) NULL COMMENT '新数值结果（ALT/血红蛋白）',
+    new_result       VARCHAR(8)   NULL COMMENT '新阴阳性结果（HBV/HCV/HIV/梅毒 NEGATIVE/POSITIVE）',
+    reason           VARCHAR(512) NOT NULL COMMENT '复测原因',
+    operator         VARCHAR(32)  NOT NULL COMMENT '复测检测人',
+    tested_at        DATETIME     NOT NULL COMMENT '复测时间',
+    decision         VARCHAR(16)  NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING 待复核/ADOPTED 采用/REJECTED 拒绝',
+    decision_reason  VARCHAR(512) NULL COMMENT '复核人采用或拒绝的理由',
+    reviewer         VARCHAR(32)  NULL COMMENT '放行复核人',
+    reviewed_at      DATETIME     NULL COMMENT '复核（放行）时间',
+    created_at       DATETIME     NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_retest_round (sample_id, item_code, round_no),
+    KEY idx_retest_sample (sample_id),
+    CONSTRAINT fk_retest_sample FOREIGN KEY (sample_id) REFERENCES test_sample (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='标本复测轮次';
+
+-- 成分制备批次
+CREATE TABLE preparation_batch (
+    id                 BIGINT      NOT NULL AUTO_INCREMENT,
+    batch_no           VARCHAR(32) NOT NULL COMMENT '制备批号',
+    collection_id      BIGINT      NULL COMMENT '全血来源（采血记录）',
+    collect_no         VARCHAR(32) NULL COMMENT '全血来源单号',
+    blood_type         VARCHAR(4)  NOT NULL COMMENT '血型',
+    rbc_bags           INT         NOT NULL DEFAULT 0 COMMENT '红细胞悬液袋数',
+    rbc_volume_ml      INT         NOT NULL DEFAULT 0 COMMENT '红细胞悬液容量 ml',
+    plasma_bags        INT         NOT NULL DEFAULT 0 COMMENT '血浆袋数',
+    plasma_volume_ml   INT         NOT NULL DEFAULT 0 COMMENT '血浆容量 ml',
+    platelet_bags      INT         NOT NULL DEFAULT 0 COMMENT '血小板袋数',
+    platelet_volume_ml INT         NOT NULL DEFAULT 0 COMMENT '血小板容量 ml',
+    cryo_bags          INT         NOT NULL DEFAULT 0 COMMENT '冷沉淀袋数',
+    cryo_volume_ml     INT         NOT NULL DEFAULT 0 COMMENT '冷沉淀容量 ml',
+    operator           VARCHAR(32) NULL COMMENT '制备人',
+    prepared_time      DATETIME    NULL COMMENT '制备时间',
+    status             VARCHAR(16) NOT NULL COMMENT 'DONE 已制备/VOID 作废',
+    created_at         DATETIME    NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_prep_batch_no (batch_no),
+    KEY idx_prep_collection (collection_id),
+    KEY idx_prep_blood (blood_type),
+    CONSTRAINT fk_prep_collection FOREIGN KEY (collection_id) REFERENCES collection_record (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='成分制备批次';
+
+-- 血液库存（血型 × 成分 二维）
+CREATE TABLE blood_inventory (
+    id             BIGINT     NOT NULL AUTO_INCREMENT,
+    blood_type     VARCHAR(4) NOT NULL COMMENT '血型',
+    component      VARCHAR(8) NOT NULL COMMENT 'WHOLE 全血/RBC 红细胞/PLASMA 血浆/PLATELET 血小板',
+    bag_count      INT        NOT NULL DEFAULT 0 COMMENT '现有袋数',
+    unit_count     INT        NOT NULL DEFAULT 0 COMMENT '库存 U 数',
+    nearest_expiry DATE       NULL COMMENT '最近效期',
+    warning_line   INT        NOT NULL DEFAULT 0 COMMENT '预警线（袋）',
+    updated_at     DATETIME   NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_inv_cell (blood_type, component)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='血液库存（血型×成分）';
+
+-- 血袋
+CREATE TABLE blood_bag (
+    id            BIGINT      NOT NULL AUTO_INCREMENT,
+    bag_no        VARCHAR(32) NOT NULL COMMENT '袋号',
+    blood_type    VARCHAR(4)  NOT NULL COMMENT '血型',
+    component     VARCHAR(8)  NOT NULL COMMENT 'WHOLE/RBC/PLASMA/PLATELET/CRYO',
+    volume_ml     INT         NOT NULL COMMENT '容量 ml',
+    collect_date  DATE        NOT NULL COMMENT '采集日期',
+    expiry_date   DATE        NOT NULL COMMENT '失效日期',
+    status        VARCHAR(16) NOT NULL COMMENT 'AVAILABLE 可用/QUARANTINED 同源隔离/ISSUED 已发出/SCRAPPED 已报废',
+    donor_name    VARCHAR(64) NULL COMMENT '献血者姓名',
+    batch_id      BIGINT      NULL COMMENT '来源制备批次',
+    collection_id BIGINT      NULL COMMENT '来源采血记录',
+    created_at    DATETIME    NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_bag_no (bag_no),
+    KEY idx_bag_cell (blood_type, component),
+    KEY idx_bag_status (status),
+    KEY idx_bag_expiry (expiry_date),
+    CONSTRAINT fk_bag_batch FOREIGN KEY (batch_id) REFERENCES preparation_batch (id),
+    CONSTRAINT fk_bag_collection FOREIGN KEY (collection_id) REFERENCES collection_record (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='血袋';
+
+-- 报废记录
+CREATE TABLE scrap_record (
+    id          BIGINT      NOT NULL AUTO_INCREMENT,
+    scrap_no    VARCHAR(32) NOT NULL COMMENT '报废单号',
+    bag_no      VARCHAR(32) NULL COMMENT '袋号',
+    blood_type  VARCHAR(4)  NOT NULL COMMENT '血型',
+    component   VARCHAR(8)  NOT NULL COMMENT '成分',
+    bags        INT         NOT NULL DEFAULT 0 COMMENT '报废袋数',
+    volume_ml   INT         NOT NULL DEFAULT 0 COMMENT '报废容量 ml',
+    reason      VARCHAR(16) NOT NULL COMMENT 'EXPIRED 过期/DAMAGED 破损/FAILED 检验不合格/NEAR_EXPIRY 临近效期',
+    operator    VARCHAR(32) NULL COMMENT '操作人',
+    scrap_time  DATETIME    NULL COMMENT '报废时间',
+    remark      VARCHAR(255) NULL,
+    created_at  DATETIME    NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_scrap_no (scrap_no),
+    KEY idx_scrap_cell (blood_type, component)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='血液报废记录';
+
+-- 医院用血申请
+CREATE TABLE hospital_request (
+    id                  BIGINT       NOT NULL AUTO_INCREMENT,
+    request_no          VARCHAR(32)  NOT NULL COMMENT '申请单号',
+    hospital            VARCHAR(128) NOT NULL COMMENT '申请医院',
+    patient_name        VARCHAR(64)  NOT NULL COMMENT '患者姓名',
+    patient_blood_type  VARCHAR(4)   NOT NULL COMMENT '患者血型',
+    component           VARCHAR(8)   NOT NULL COMMENT '申请成分',
+    units_u             INT          NOT NULL COMMENT '申请 U 数',
+    urgency             VARCHAR(16)  NOT NULL COMMENT 'ROUTINE 常规/URGENT 紧急/CRITICAL 特急',
+    status              VARCHAR(16)  NOT NULL COMMENT 'PENDING 待发/PARTIAL 部分发放/DONE 已发放/CANCELED 已取消',
+    issued_u            INT          NOT NULL DEFAULT 0 COMMENT '已发 U 数',
+    request_time        DATETIME     NULL COMMENT '申请时间',
+    remark              VARCHAR(255) NULL,
+    created_at          DATETIME     NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_request_no (request_no),
+    KEY idx_request_blood (patient_blood_type),
+    KEY idx_request_hospital (hospital)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='医院用血申请';
+
+-- 交叉配血 / 发血记录
+CREATE TABLE cross_match (
+    id               BIGINT      NOT NULL AUTO_INCREMENT,
+    match_no         VARCHAR(32) NOT NULL COMMENT '配血单号',
+    request_id       BIGINT      NOT NULL COMMENT '用血申请',
+    bag_id           BIGINT      NULL COMMENT '供血血袋',
+    bag_no           VARCHAR(32) NULL COMMENT '供血袋号',
+    donor_name       VARCHAR(64) NULL COMMENT '供血者',
+    blood_type       VARCHAR(4)  NOT NULL COMMENT '供血血型',
+    component        VARCHAR(8)  NOT NULL COMMENT '成分',
+    expiry_date      DATE        NULL COMMENT '效期',
+    recipient        VARCHAR(64) NOT NULL COMMENT '受血者',
+    hospital         VARCHAR(128) NULL COMMENT '医院',
+    units_u          INT         NOT NULL COMMENT '发血 U 数',
+    urgency          VARCHAR(16) NOT NULL COMMENT '紧急程度',
+    result           VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING 未判定/COMPATIBLE 相合/SUSPECT 可疑/INCOMPATIBLE 不相合',
+    operator         VARCHAR(32) NULL COMMENT '配血操作人',
+    match_time       DATETIME    NULL COMMENT '配血时间',
+    issued           TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '是否已出库',
+    issue_time       DATETIME    NULL COMMENT '发血时间',
+    issue_operator   VARCHAR(32) NULL COMMENT '发血人',
+    recovery_checked TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '血袋回收核对',
+    recovery_time    DATETIME    NULL COMMENT '回收核对时间',
+    created_at       DATETIME    NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_match_no (match_no),
+    KEY idx_match_request (request_id),
+    KEY idx_match_bag (bag_id),
+    CONSTRAINT fk_match_request FOREIGN KEY (request_id) REFERENCES hospital_request (id),
+    CONSTRAINT fk_match_bag FOREIGN KEY (bag_id) REFERENCES blood_bag (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='交叉配血与发血记录';
+
+-- 输血不良反应处置事件（医院就某条已发血记录上报）
+CREATE TABLE transfusion_reaction (
+    id               BIGINT       NOT NULL AUTO_INCREMENT,
+    event_no         VARCHAR(32)  NOT NULL COMMENT '事件单号 AR+日期+序号',
+    match_id         BIGINT       NOT NULL COMMENT '发血（配血）记录',
+    match_no         VARCHAR(32)  NOT NULL COMMENT '发血单号',
+    bag_no           VARCHAR(32)  NULL COMMENT '供血袋号',
+    recipient        VARCHAR(64)  NOT NULL COMMENT '受血者',
+    hospital         VARCHAR(128) NOT NULL COMMENT '上报医院',
+    reporter         VARCHAR(64)  NOT NULL COMMENT '上报人（处置人）',
+    symptoms         VARCHAR(512) NOT NULL COMMENT '症状描述',
+    reaction_time    DATETIME     NOT NULL COMMENT '反应发生时间',
+    report_time      DATETIME     NOT NULL COMMENT '上报时间',
+    source_collection_id BIGINT  NULL COMMENT '溯源采血记录',
+    status           VARCHAR(16)  NOT NULL COMMENT 'OPEN 在办/EXCLUDED 排除关联/CONFIRMED 确认风险',
+    review_result    VARCHAR(16)  NULL COMMENT 'EXCLUDED 排除关联/CONFIRMED 确认风险',
+    reviewer         VARCHAR(64)  NULL COMMENT '质量复核人',
+    review_comment   VARCHAR(512) NULL COMMENT '复核意见',
+    reviewed_at      DATETIME     NULL COMMENT '复核时间',
+    dedup_key        CHAR(64)     NOT NULL COMMENT '幂等键：发血记录+反应时间+症状的 SHA-256',
+    created_at       DATETIME     NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_reaction_no (event_no),
+    UNIQUE KEY uk_reaction_dedup (dedup_key),
+    KEY idx_reaction_match (match_id),
+    KEY idx_reaction_status (status),
+    CONSTRAINT fk_reaction_match FOREIGN KEY (match_id) REFERENCES cross_match (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='输血不良反应处置事件';
+
+-- 事件 × 同源血袋关联（隔离 / 释放 / 报废 的逐步处置台账载体）
+CREATE TABLE reaction_bag_link (
+    id           BIGINT      NOT NULL AUTO_INCREMENT,
+    event_id     BIGINT      NOT NULL COMMENT '反应事件',
+    bag_id       BIGINT      NOT NULL COMMENT '同源血袋',
+    bag_no       VARCHAR(32) NOT NULL COMMENT '袋号',
+    blood_type   VARCHAR(4)  NOT NULL COMMENT '血型',
+    component    VARCHAR(8)  NOT NULL COMMENT '成分',
+    link_type    VARCHAR(16) NOT NULL COMMENT 'ISOLATED 隔离袋/TRACE 仅追溯（已发出/已报废）',
+    link_status  VARCHAR(16) NOT NULL COMMENT 'QUARANTINED 隔离中/RELEASED 已释放/SCRAPPED 已报废/TRACED 仅追溯/KEPT 保持隔离',
+    note         VARCHAR(512) NULL COMMENT '释放或保持隔离的原因',
+    created_at   DATETIME    NULL COMMENT '入单（隔离/追溯）时间',
+    updated_at   DATETIME    NULL COMMENT '最近处置时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_event_bag (event_id, bag_id),
+    KEY idx_link_bag (bag_id),
+    KEY idx_link_event_status (event_id, link_status),
+    CONSTRAINT fk_link_event FOREIGN KEY (event_id) REFERENCES transfusion_reaction (id),
+    CONSTRAINT fk_link_bag FOREIGN KEY (bag_id) REFERENCES blood_bag (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='反应事件同源血袋关联';
+
+-- 事件处置台账（隔离、释放、报废、复核逐步留痕）
+CREATE TABLE reaction_ledger (
+    id          BIGINT       NOT NULL AUTO_INCREMENT,
+    event_id    BIGINT       NOT NULL COMMENT '反应事件',
+    bag_id      BIGINT       NULL COMMENT '涉及血袋（事件级操作时为空）',
+    bag_no      VARCHAR(32)  NULL COMMENT '袋号',
+    action      VARCHAR(16)  NOT NULL COMMENT 'REPORT 上报/ISOLATE 隔离/RELEASE 释放/SCRAP 报废/REVIEW 复核/KEEP 保持隔离',
+    detail      VARCHAR(512) NOT NULL COMMENT '处置说明',
+    operator    VARCHAR(64)  NULL COMMENT '操作人',
+    action_time DATETIME     NOT NULL COMMENT '操作时间',
+    created_at  DATETIME     NULL,
+    PRIMARY KEY (id),
+    KEY idx_ledger_event (event_id, id),
+    CONSTRAINT fk_ledger_event FOREIGN KEY (event_id) REFERENCES transfusion_reaction (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='反应事件处置台账';
+
+-- ========================= 种子数据 =========================
+-- 献血者（12 人，含既往献血次数 / 累计献血量 / 暂缓献血截止日期）
+INSERT INTO donor (donor_no, name, gender, age, blood_type, id_card_no, phone, weight_kg, donation_count, total_volume_ml, defer_until, last_donation_date, created_at) VALUES
+('D20260001', '张伟', '男', 34, 'A+', '310101199203114517', '13810013751', 68.0, 5, 1600, NULL, DATE_SUB(CURDATE(), INTERVAL 420 DAY), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260002', '李静', '女', 28, 'A-', '310101199806224826', '13810027502', 52.5, 2, 600, NULL, DATE_SUB(CURDATE(), INTERVAL 260 DAY), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260003', '王强', '男', 41, 'B+', '310101198506073319', '13810041253', 75.5, 9, 3200, NULL, DATE_SUB(CURDATE(), INTERVAL 150 DAY), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260004', '刘敏', '女', 31, 'B-', '310101199505186642', '13810055004', 54.0, 1, 300, NULL, DATE_SUB(CURDATE(), INTERVAL 700 DAY), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260005', '陈昊', '男', 26, 'O+', '310101200003209158', '13810068755', 70.0, 3, 1000, NULL, DATE_SUB(CURDATE(), INTERVAL 60 DAY), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260006', '赵雪', '女', 37, 'O-', '310101198911027724', '13810082506', 51.0, 6, 2000, NULL, DATE_SUB(CURDATE(), INTERVAL 200 DAY), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260007', '孙磊', '男', 45, 'AB+', '310101198104154036', '13810096257', 78.0, 12, 4400, NULL, DATE_SUB(CURDATE(), INTERVAL 95 DAY), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260008', '周琳', '女', 24, 'AB-', '310101200207298533', '13810110008', 48.5, 0, 0, NULL, NULL, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260009', '吴斌', '男', 33, 'A+', '310101199312065517', '13810123759', 66.5, 4, 1400, NULL, DATE_SUB(CURDATE(), INTERVAL 55 DAY), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260010', '郑霞', '女', 29, 'B+', '310101199705136629', '13810137510', 56.5, 2, 700, DATE_ADD(CURDATE(), INTERVAL 14 DAY), DATE_SUB(CURDATE(), INTERVAL 310 DAY), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260011', '冯磊', '男', 39, 'O+', '310101198702234218', '13810151261', 72.0, 7, 2600, NULL, DATE_SUB(CURDATE(), INTERVAL 30 DAY), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE)),
+('D20260012', '何雨', '女', 22, 'AB+', '310101200405116847', '13810165012', 49.0, 0, 0, NULL, NULL, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 730 DAY), INTERVAL '9:15' HOUR_MINUTE));
+
+-- 采血记录（14 条：今日 5 个采血中 / 3 个已完成待消毒，其余为历史记录）
+INSERT INTO collection_record (collect_no, donor_id, station_code, volume_ml, collect_date, nurse, status, created_at) VALUES
+('C2026001', 1, 'P01', 400, DATE_ADD(CURDATE(), INTERVAL 0 DAY), '沈青', 'COLLECTING', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026002', 3, 'P02', 400, DATE_ADD(CURDATE(), INTERVAL 0 DAY), '韩梅', 'COLLECTING', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026003', 5, 'P04', 300, DATE_ADD(CURDATE(), INTERVAL 0 DAY), '沈青', 'COLLECTING', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026004', 7, 'P07', 400, DATE_ADD(CURDATE(), INTERVAL 0 DAY), '崔颖', 'COLLECTING', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026005', 11, 'P09', 200, DATE_ADD(CURDATE(), INTERVAL 0 DAY), '韩梅', 'COLLECTING', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026006', 2, 'P03', 300, DATE_ADD(CURDATE(), INTERVAL 0 DAY), '崔颖', 'DONE', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026007', 8, 'P05', 200, DATE_ADD(CURDATE(), INTERVAL 0 DAY), '沈青', 'DONE', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026008', 6, 'P11', 400, DATE_ADD(CURDATE(), INTERVAL 0 DAY), '韩梅', 'DONE', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026009', 4, 'P06', 400, DATE_SUB(CURDATE(), INTERVAL 1 DAY), '崔颖', 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026010', 9, 'P08', 400, DATE_SUB(CURDATE(), INTERVAL 2 DAY), '沈青', 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 2 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026011', 10, 'P10', 300, DATE_SUB(CURDATE(), INTERVAL 3 DAY), '韩梅', 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 3 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026012', 12, 'P12', 200, DATE_SUB(CURDATE(), INTERVAL 4 DAY), '崔颖', 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 4 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026013', 3, 'P02', 400, DATE_SUB(CURDATE(), INTERVAL 6 DAY), '沈青', 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 6 DAY), INTERVAL '8:30' HOUR_MINUTE)),
+('C2026014', 7, 'P07', 400, DATE_SUB(CURDATE(), INTERVAL 9 DAY), '韩梅', 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 9 DAY), INTERVAL '8:30' HOUR_MINUTE));
+
+-- 标本检验（12 个标本：待检 4 / 检测中 3 / 已放行 4 / 报废 1）
+INSERT INTO test_sample (barcode, collection_id, donor_name, blood_type, alt_value, hb_value, hbv_result, hcv_result, hiv_result, syphilis_result, reviewer, status, tested_at, released_at, created_at) VALUES
+('S20260001', 1, '张伟', 'A+', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PENDING', NULL, NULL, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260002', 2, '王强', 'B+', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PENDING', NULL, NULL, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260003', 4, '刘敏', 'B-', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PENDING', NULL, NULL, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260004', 5, '冯磊', 'O+', NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'PENDING', NULL, NULL, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260005', 3, '陈昊', 'O+', 21.5, 138.0, 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', NULL, 'TESTING', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '10:20' HOUR_MINUTE), NULL, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260006', 6, '李静', 'A-', 18.2, 131.5, 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', NULL, 'TESTING', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '10:20' HOUR_MINUTE), NULL, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260007', 7, '周琳', 'AB-', 26.8, 129.0, 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', NULL, 'TESTING', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '10:20' HOUR_MINUTE), NULL, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260008', 9, '吴斌', 'A+', 44.7, 142.0, 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', '林岚', 'RELEASED', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '10:20' HOUR_MINUTE), DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '15:40' HOUR_MINUTE), DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260009', 10, '郑霞', 'B+', 22.1, 136.5, 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', '林岚', 'RELEASED', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '10:20' HOUR_MINUTE), DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '15:40' HOUR_MINUTE), DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260010', 11, '郑霞', 'B+', 17.6, 128.0, 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', '邵华', 'RELEASED', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '10:20' HOUR_MINUTE), DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '15:40' HOUR_MINUTE), DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260011', 12, '何雨', 'AB+', 24.3, 145.0, 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', 'NEGATIVE', '邵华', 'RELEASED', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '10:20' HOUR_MINUTE), DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '15:40' HOUR_MINUTE), DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE)),
+('S20260012', 13, '王强', 'B+', 88.6, 133.0, 'NEGATIVE', 'POSITIVE', 'NEGATIVE', 'NEGATIVE', '林岚', 'SCRAPPED', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '10:20' HOUR_MINUTE), NULL, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '9:5' HOUR_MINUTE));
+
+-- 复测轮次（演示用：标本 S20260008 初检 ALT 44.7 偏高判废，复测 21.0 合格，复核人采用后放行；初检值不覆盖）
+INSERT INTO test_retest_round (sample_id, item_code, round_no, new_value, new_result, reason, operator, tested_at, decision, decision_reason, reviewer, reviewed_at, created_at) VALUES
+(8, 'ALT', 1, 21.0, NULL, '更换 ALT 试剂并做质控后，同管血样上机复测，排除首检仪器漂移', '检验 韩梅', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '14:05' HOUR_MINUTE), 'ADOPTED', '复测在控、有质控记录，采用复测值 21.0 U/L 放行；初检 44.7 不覆盖，留档追溯', '林岚', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '15:40' HOUR_MINUTE), DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '14:05' HOUR_MINUTE));
+
+-- 成分制备批次（8 批，均由标本放行后自动生成）
+INSERT INTO preparation_batch (batch_no, collection_id, collect_no, blood_type, rbc_bags, rbc_volume_ml, plasma_bags, plasma_volume_ml, platelet_bags, platelet_volume_ml, cryo_bags, cryo_volume_ml, operator, prepared_time, status, created_at) VALUES
+('PB2026001', 8, 'C20260008', 'A+', 1, 180, 1, 160, 1, 250, 0, 0, '许诺', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 5 DAY), INTERVAL '14:10' HOUR_MINUTE), 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 5 DAY), INTERVAL '14:10' HOUR_MINUTE)),
+('PB2026002', 9, 'C20260009', 'A+', 1, 180, 1, 160, 1, 250, 1, 30, '许诺', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 4 DAY), INTERVAL '14:10' HOUR_MINUTE), 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 4 DAY), INTERVAL '14:10' HOUR_MINUTE)),
+('PB2026003', 10, 'C20260010', 'B+', 2, 360, 1, 160, 0, 0, 0, 0, '于蕾', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 3 DAY), INTERVAL '14:10' HOUR_MINUTE), 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 3 DAY), INTERVAL '14:10' HOUR_MINUTE)),
+('PB2026004', 11, 'C20260011', 'B+', 1, 135, 2, 240, 0, 0, 1, 25, '于蕾', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 2 DAY), INTERVAL '14:10' HOUR_MINUTE), 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 2 DAY), INTERVAL '14:10' HOUR_MINUTE)),
+('PB2026005', 12, 'C20260012', 'AB+', 1, 180, 1, 160, 1, 250, 0, 0, '许诺', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '14:10' HOUR_MINUTE), 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '14:10' HOUR_MINUTE)),
+('PB2026006', 13, 'C20260013', 'B+', 1, 180, 1, 160, 1, 250, 1, 35, '于蕾', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 6 DAY), INTERVAL '14:10' HOUR_MINUTE), 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 6 DAY), INTERVAL '14:10' HOUR_MINUTE)),
+('PB2026007', 14, 'C20260014', 'AB+', 2, 360, 1, 160, 0, 0, 1, 40, '许诺', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 7 DAY), INTERVAL '14:10' HOUR_MINUTE), 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 7 DAY), INTERVAL '14:10' HOUR_MINUTE)),
+('PB2026008', 6, 'C20260006', 'A-', 1, 135, 1, 120, 0, 0, 0, 0, '于蕾', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '14:10' HOUR_MINUTE), 'DONE', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '14:10' HOUR_MINUTE));
+
+-- 血袋（8 血型 × 4 成分铺满，另含冷沉淀袋；含已过期 / 临近效期 / 已发出 / 已报废）
+INSERT INTO blood_bag (bag_no, blood_type, component, volume_ml, collect_date, expiry_date, status, donor_name, batch_id, collection_id, created_at) VALUES
+('B20260001', 'A+', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 34 DAY), 'SCRAPPED', '张伟', 1, 8, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260002', 'A+', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 32 DAY), 'AVAILABLE', '李静', 2, 9, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260003', 'A+', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 41 DAY), 'AVAILABLE', '李静', 2, 9, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260004', 'A+', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 39 DAY), 'AVAILABLE', '王强', 3, 10, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260005', 'A+', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 364 DAY), 'SCRAPPED', '王强', 3, 10, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260006', 'A+', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 362 DAY), 'AVAILABLE', '刘敏', 4, 11, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260007', 'A+', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 4 DAY), 'AVAILABLE', '刘敏', 4, 11, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260008', 'A+', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 2 DAY), 'AVAILABLE', '陈昊', 5, 12, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260009', 'A-', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 34 DAY), 'SCRAPPED', '李静', 2, 9, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260010', 'A-', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 32 DAY), 'AVAILABLE', '王强', 3, 10, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260011', 'A-', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 41 DAY), 'AVAILABLE', '王强', 3, 10, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260012', 'A-', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 39 DAY), 'AVAILABLE', '刘敏', 4, 11, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260013', 'A-', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 364 DAY), 'ISSUED', '刘敏', 4, 11, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260014', 'A-', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 362 DAY), 'AVAILABLE', '陈昊', 5, 12, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260015', 'A-', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 4 DAY), 'AVAILABLE', '陈昊', 5, 12, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260016', 'A-', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 2 DAY), 'AVAILABLE', '赵雪', 1, 8, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260017', 'B+', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 38 DAY), DATE_SUB(CURDATE(), INTERVAL 3 DAY), 'AVAILABLE', '王强', 3, 10, DATE_SUB(CURDATE(), INTERVAL 38 DAY)),
+('B20260018', 'B+', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 32 DAY), 'AVAILABLE', '刘敏', 4, 11, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260019', 'B+', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 45 DAY), DATE_SUB(CURDATE(), INTERVAL 3 DAY), 'AVAILABLE', '刘敏', 4, 11, DATE_SUB(CURDATE(), INTERVAL 45 DAY)),
+('B20260020', 'B+', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 39 DAY), 'AVAILABLE', '陈昊', 5, 12, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260021', 'B+', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 368 DAY), DATE_SUB(CURDATE(), INTERVAL 3 DAY), 'SCRAPPED', '陈昊', 5, 12, DATE_SUB(CURDATE(), INTERVAL 368 DAY)),
+('B20260022', 'B+', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 362 DAY), 'AVAILABLE', '赵雪', 1, 8, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260023', 'B+', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 8 DAY), DATE_SUB(CURDATE(), INTERVAL 3 DAY), 'AVAILABLE', '赵雪', 1, 8, DATE_SUB(CURDATE(), INTERVAL 8 DAY)),
+('B20260024', 'B+', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 2 DAY), 'AVAILABLE', '孙磊', 2, 9, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260025', 'B-', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 34 DAY), 'ISSUED', '刘敏', 4, 11, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260026', 'B-', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 32 DAY), 'AVAILABLE', '陈昊', 5, 12, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260027', 'B-', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 41 DAY), 'AVAILABLE', '陈昊', 5, 12, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260028', 'B-', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 39 DAY), 'AVAILABLE', '赵雪', 1, 8, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260029', 'B-', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 364 DAY), 'SCRAPPED', '赵雪', 1, 8, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260030', 'B-', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 362 DAY), 'AVAILABLE', '孙磊', 2, 9, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260031', 'B-', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 4 DAY), 'AVAILABLE', '孙磊', 2, 9, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260032', 'B-', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 2 DAY), 'AVAILABLE', '周琳', 3, 10, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260033', 'O+', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 34 DAY), 'SCRAPPED', '陈昊', 5, 12, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260034', 'O+', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 32 DAY), 'SCRAPPED', '赵雪', 1, 8, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260035', 'O+', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 41 DAY), 'AVAILABLE', '赵雪', 1, 8, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260036', 'O+', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 39 DAY), 'AVAILABLE', '孙磊', 2, 9, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260037', 'O+', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 364 DAY), 'AVAILABLE', '孙磊', 2, 9, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260038', 'O+', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 362 DAY), 'AVAILABLE', '周琳', 3, 10, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260039', 'O+', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 4 DAY), 'AVAILABLE', '周琳', 3, 10, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260040', 'O+', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 2 DAY), 'AVAILABLE', '吴斌', 4, 11, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260041', 'O-', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 34 DAY), 'AVAILABLE', '赵雪', 1, 8, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260042', 'O-', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 32 DAY), DATE_ADD(CURDATE(), INTERVAL 3 DAY), 'AVAILABLE', '孙磊', 2, 9, DATE_SUB(CURDATE(), INTERVAL 32 DAY)),
+('B20260043', 'O-', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 41 DAY), 'ISSUED', '孙磊', 2, 9, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260044', 'O-', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 39 DAY), DATE_ADD(CURDATE(), INTERVAL 3 DAY), 'AVAILABLE', '周琳', 3, 10, DATE_SUB(CURDATE(), INTERVAL 39 DAY)),
+('B20260045', 'O-', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 364 DAY), 'AVAILABLE', '周琳', 3, 10, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260046', 'O-', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 362 DAY), DATE_ADD(CURDATE(), INTERVAL 3 DAY), 'AVAILABLE', '吴斌', 4, 11, DATE_SUB(CURDATE(), INTERVAL 362 DAY)),
+('B20260047', 'O-', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 4 DAY), 'AVAILABLE', '吴斌', 4, 11, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260048', 'O-', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 2 DAY), DATE_ADD(CURDATE(), INTERVAL 3 DAY), 'AVAILABLE', '郑霞', 5, 12, DATE_SUB(CURDATE(), INTERVAL 2 DAY)),
+('B20260049', 'AB+', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 34 DAY), 'AVAILABLE', '孙磊', 2, 9, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260050', 'AB+', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 32 DAY), 'AVAILABLE', '周琳', 3, 10, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260051', 'AB+', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 41 DAY), 'AVAILABLE', '周琳', 3, 10, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260052', 'AB+', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 39 DAY), 'AVAILABLE', '吴斌', 4, 11, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260053', 'AB+', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 364 DAY), 'AVAILABLE', '吴斌', 4, 11, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260054', 'AB+', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 362 DAY), 'AVAILABLE', '郑霞', 5, 12, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260055', 'AB+', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 4 DAY), 'AVAILABLE', '郑霞', 5, 12, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260056', 'AB+', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 2 DAY), 'AVAILABLE', '冯磊', 1, 8, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260057', 'AB-', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 34 DAY), 'AVAILABLE', '周琳', 3, 10, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260058', 'AB-', 'WHOLE', 400, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 32 DAY), 'AVAILABLE', '吴斌', 4, 11, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260059', 'AB-', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 41 DAY), 'AVAILABLE', '吴斌', 4, 11, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260060', 'AB-', 'RBC', 200, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 39 DAY), 'AVAILABLE', '郑霞', 7, 14, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260061', 'AB-', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 364 DAY), 'AVAILABLE', '郑霞', 5, 12, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260062', 'AB-', 'PLASMA', 220, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 362 DAY), 'AVAILABLE', '冯磊', 1, 8, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260063', 'AB-', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 4 DAY), 'AVAILABLE', '冯磊', 1, 8, DATE_SUB(CURDATE(), INTERVAL 1 DAY)),
+('B20260064', 'AB-', 'PLATELET', 250, DATE_SUB(CURDATE(), INTERVAL 3 DAY), DATE_ADD(CURDATE(), INTERVAL 2 DAY), 'AVAILABLE', '何雨', 2, 9, DATE_SUB(CURDATE(), INTERVAL 3 DAY)),
+('B20260065', 'A+', 'CRYO', 30, DATE_SUB(CURDATE(), INTERVAL 8 DAY), DATE_ADD(CURDATE(), INTERVAL 180 DAY), 'AVAILABLE', '张伟', 1, 8, DATE_SUB(CURDATE(), INTERVAL 8 DAY)),
+('B20260066', 'A-', 'CRYO', 30, DATE_SUB(CURDATE(), INTERVAL 8 DAY), DATE_ADD(CURDATE(), INTERVAL 180 DAY), 'AVAILABLE', '李静', 2, 9, DATE_SUB(CURDATE(), INTERVAL 8 DAY)),
+('B20260067', 'B+', 'CRYO', 30, DATE_SUB(CURDATE(), INTERVAL 8 DAY), DATE_ADD(CURDATE(), INTERVAL 180 DAY), 'AVAILABLE', '王强', 3, 10, DATE_SUB(CURDATE(), INTERVAL 8 DAY)),
+('B20260068', 'B-', 'CRYO', 30, DATE_SUB(CURDATE(), INTERVAL 8 DAY), DATE_ADD(CURDATE(), INTERVAL 180 DAY), 'AVAILABLE', '刘敏', 4, 11, DATE_SUB(CURDATE(), INTERVAL 8 DAY));
+
+-- 血液库存（8 血型 × 4 成分 = 32 格）
+INSERT INTO blood_inventory (blood_type, component, bag_count, unit_count, nearest_expiry, warning_line, updated_at) VALUES
+('A+', 'WHOLE', 1, 2, DATE_ADD(CURDATE(), INTERVAL 32 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('A+', 'RBC', 2, 2, DATE_ADD(CURDATE(), INTERVAL 39 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('A+', 'PLASMA', 2, 2, DATE_ADD(CURDATE(), INTERVAL 362 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('A+', 'PLATELET', 2, 2, DATE_ADD(CURDATE(), INTERVAL 2 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('A-', 'WHOLE', 1, 2, DATE_ADD(CURDATE(), INTERVAL 32 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('A-', 'RBC', 2, 2, DATE_ADD(CURDATE(), INTERVAL 39 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('A-', 'PLASMA', 1, 1, DATE_ADD(CURDATE(), INTERVAL 362 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('A-', 'PLATELET', 2, 2, DATE_ADD(CURDATE(), INTERVAL 2 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('B+', 'WHOLE', 2, 4, DATE_SUB(CURDATE(), INTERVAL 3 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('B+', 'RBC', 2, 2, DATE_SUB(CURDATE(), INTERVAL 3 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('B+', 'PLASMA', 2, 2, DATE_ADD(CURDATE(), INTERVAL 362 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('B+', 'PLATELET', 2, 2, DATE_SUB(CURDATE(), INTERVAL 3 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('B-', 'WHOLE', 1, 2, DATE_ADD(CURDATE(), INTERVAL 32 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('B-', 'RBC', 2, 2, DATE_ADD(CURDATE(), INTERVAL 39 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('B-', 'PLASMA', 1, 1, DATE_ADD(CURDATE(), INTERVAL 362 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('B-', 'PLATELET', 2, 2, DATE_ADD(CURDATE(), INTERVAL 2 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('O+', 'WHOLE', 0, 0, DATE_ADD(CURDATE(), INTERVAL 30 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('O+', 'RBC', 2, 2, DATE_ADD(CURDATE(), INTERVAL 39 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('O+', 'PLASMA', 2, 2, DATE_ADD(CURDATE(), INTERVAL 362 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('O+', 'PLATELET', 2, 2, DATE_ADD(CURDATE(), INTERVAL 2 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('O-', 'WHOLE', 2, 4, DATE_ADD(CURDATE(), INTERVAL 3 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('O-', 'RBC', 1, 1, DATE_ADD(CURDATE(), INTERVAL 3 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('O-', 'PLASMA', 2, 2, DATE_ADD(CURDATE(), INTERVAL 3 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('O-', 'PLATELET', 2, 2, DATE_ADD(CURDATE(), INTERVAL 3 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('AB+', 'WHOLE', 2, 4, DATE_ADD(CURDATE(), INTERVAL 32 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('AB+', 'RBC', 2, 2, DATE_ADD(CURDATE(), INTERVAL 39 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('AB+', 'PLASMA', 2, 2, DATE_ADD(CURDATE(), INTERVAL 362 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('AB+', 'PLATELET', 2, 2, DATE_ADD(CURDATE(), INTERVAL 2 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('AB-', 'WHOLE', 2, 4, DATE_ADD(CURDATE(), INTERVAL 32 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('AB-', 'RBC', 2, 2, DATE_ADD(CURDATE(), INTERVAL 39 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('AB-', 'PLASMA', 2, 2, DATE_ADD(CURDATE(), INTERVAL 362 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE)),
+('AB-', 'PLATELET', 2, 2, DATE_ADD(CURDATE(), INTERVAL 2 DAY), 2, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '7:30' HOUR_MINUTE));
+
+-- 报废记录（7 条：过期 / 破损 / 检验不合格）
+INSERT INTO scrap_record (scrap_no, bag_no, blood_type, component, bags, volume_ml, reason, operator, scrap_time, remark, created_at) VALUES
+('SC2026001', 'B20260001', 'A+', 'WHOLE', 1, 400, 'DAMAGED', '报废 邵华', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 6 DAY), INTERVAL '16:20' HOUR_MINUTE), '运输途中破袋', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 6 DAY), INTERVAL '16:20' HOUR_MINUTE)),
+('SC2026002', 'B20260005', 'A+', 'PLASMA', 1, 220, 'FAILED', '报废 林岚', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 5 DAY), INTERVAL '16:20' HOUR_MINUTE), 'HCV 阳性，检验不合格', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 5 DAY), INTERVAL '16:20' HOUR_MINUTE)),
+('SC2026003', 'B20260009', 'A-', 'WHOLE', 1, 400, 'EXPIRED', '报废 邵华', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 4 DAY), INTERVAL '16:20' HOUR_MINUTE), '超过冰冻血浆有效期', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 4 DAY), INTERVAL '16:20' HOUR_MINUTE)),
+('SC2026004', 'B20260034', 'O+', 'WHOLE', 1, 400, 'EXPIRED', '报废 林岚', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 3 DAY), INTERVAL '16:20' HOUR_MINUTE), '到期未发出', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 3 DAY), INTERVAL '16:20' HOUR_MINUTE)),
+('SC2026005', 'B20260021', 'B+', 'PLASMA', 1, 220, 'EXPIRED', '报废 邵华', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 2 DAY), INTERVAL '16:20' HOUR_MINUTE), '血小板 5 天有效期届满', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 2 DAY), INTERVAL '16:20' HOUR_MINUTE)),
+('SC2026006', 'B20260029', 'B-', 'PLASMA', 1, 220, 'DAMAGED', '报废 林岚', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '16:20' HOUR_MINUTE), '标签脱落无法追溯', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '16:20' HOUR_MINUTE)),
+('SC2026007', 'B20260033', 'O+', 'WHOLE', 1, 400, 'FAILED', '报废 邵华', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '16:20' HOUR_MINUTE), 'ALT 超标，检验不合格', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '16:20' HOUR_MINUTE));
+
+-- 医院用血申请（8 条）
+INSERT INTO hospital_request (request_no, hospital, patient_name, patient_blood_type, component, units_u, urgency, status, issued_u, request_time, remark, created_at) VALUES
+('RQ2026001', '市第一人民医院', '韩东', 'A+', 'RBC', 4, 'URGENT', 'PENDING', 0, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '11:0' HOUR_MINUTE), '术前备血', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '11:0' HOUR_MINUTE)),
+('RQ2026002', '市第一人民医院', '郭敏', 'B+', 'WHOLE', 3, 'ROUTINE', 'PENDING', 0, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '11:0' HOUR_MINUTE), '择期手术', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '11:0' HOUR_MINUTE)),
+('RQ2026003', '省立医院', '陆遥', 'B+', 'PLATELET', 2, 'CRITICAL', 'PENDING', 0, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '11:0' HOUR_MINUTE), '产妇大出血', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '11:0' HOUR_MINUTE)),
+('RQ2026004', '省立医院', '沈亦', 'AB+', 'PLASMA', 6, 'ROUTINE', 'PENDING', 0, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 2 DAY), INTERVAL '11:0' HOUR_MINUTE), '大面积烧伤补浆', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 2 DAY), INTERVAL '11:0' HOUR_MINUTE)),
+('RQ2026005', '中心医院', '林可', 'O-', 'RBC', 2, 'URGENT', 'PARTIAL', 1, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 2 DAY), INTERVAL '11:0' HOUR_MINUTE), 'Rh 阴性稀有血型', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 2 DAY), INTERVAL '11:0' HOUR_MINUTE)),
+('RQ2026006', '中心医院', '秦朗', 'B-', 'WHOLE', 4, 'ROUTINE', 'DONE', 4, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 4 DAY), INTERVAL '11:0' HOUR_MINUTE), '骨科择期手术', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 4 DAY), INTERVAL '11:0' HOUR_MINUTE)),
+('RQ2026007', '妇幼保健院', '苏晴', 'A-', 'PLASMA', 3, 'ROUTINE', 'DONE', 3, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 5 DAY), INTERVAL '11:0' HOUR_MINUTE), '产后止血', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 5 DAY), INTERVAL '11:0' HOUR_MINUTE)),
+('RQ2026008', '创伤急救中心', '郑川', 'AB-', 'RBC', 5, 'CRITICAL', 'PENDING', 0, DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '11:0' HOUR_MINUTE), '多发伤抢救', DATE_ADD(DATE_ADD(CURDATE(), INTERVAL 0 DAY), INTERVAL '11:0' HOUR_MINUTE));
+
+-- 交叉配血与发血记录（8 条：相合 / 可疑 / 不相合 三态齐全）
+INSERT INTO cross_match (match_no, request_id, bag_id, bag_no, donor_name, blood_type, component, expiry_date, recipient, hospital, units_u, urgency, result, operator, match_time, issued, issue_time, issue_operator, recovery_checked, recovery_time, created_at) VALUES
+('XM2026001', 1, 3, 'B20260003', '李静', 'A+', 'RBC', DATE_ADD(CURDATE(), INTERVAL 41 DAY), '韩东', '市第一人民医院', 2, 'URGENT', 'COMPATIBLE', '姜妍', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE), 0, NULL, NULL, 0, NULL, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE)),
+('XM2026002', 2, 17, 'B20260017', '王强', 'B+', 'WHOLE', DATE_SUB(CURDATE(), INTERVAL 3 DAY), '郭敏', '市第一人民医院', 2, 'ROUTINE', 'COMPATIBLE', '苗苗', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE), 0, NULL, NULL, 0, NULL, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE)),
+('XM2026003', 3, 23, 'B20260023', '赵雪', 'B+', 'PLATELET', DATE_SUB(CURDATE(), INTERVAL 3 DAY), '陆遥', '省立医院', 2, 'CRITICAL', 'SUSPECT', '姜妍', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE), 0, NULL, NULL, 0, NULL, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE)),
+('XM2026004', 4, 53, 'B20260053', '吴斌', 'AB+', 'PLASMA', DATE_ADD(CURDATE(), INTERVAL 364 DAY), '沈亦', '省立医院', 3, 'ROUTINE', 'COMPATIBLE', '苗苗', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE), 0, NULL, NULL, 0, NULL, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE)),
+('XM2026005', 5, 43, 'B20260043', '孙磊', 'O-', 'RBC', DATE_ADD(CURDATE(), INTERVAL 41 DAY), '林可', '中心医院', 1, 'URGENT', 'COMPATIBLE', '姜妍', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE), 1, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '10:15' HOUR_MINUTE), '姜妍', 1, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '20:5' HOUR_MINUTE), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE)),
+('XM2026006', 6, 25, 'B20260025', '刘敏', 'B-', 'WHOLE', DATE_ADD(CURDATE(), INTERVAL 34 DAY), '秦朗', '中心医院', 4, 'ROUTINE', 'COMPATIBLE', '苗苗', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE), 1, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '10:15' HOUR_MINUTE), '姜妍', 1, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '20:5' HOUR_MINUTE), DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE)),
+('XM2026007', 7, 13, 'B20260013', '刘敏', 'A-', 'PLASMA', DATE_ADD(CURDATE(), INTERVAL 364 DAY), '苏晴', '妇幼保健院', 3, 'ROUTINE', 'COMPATIBLE', '姜妍', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE), 1, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '10:15' HOUR_MINUTE), '姜妍', 0, NULL, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE)),
+('XM2026008', 8, 60, 'B20260060', '郑霞', 'AB-', 'RBC', DATE_ADD(CURDATE(), INTERVAL 39 DAY), '郑川', '创伤急救中心', 2, 'CRITICAL', 'INCOMPATIBLE', '苗苗', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE), 0, NULL, NULL, 0, NULL, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE)),
+('XM2026009', 1, 4, 'B20260004', '王强', 'A+', 'RBC', DATE_ADD(CURDATE(), INTERVAL 39 DAY), '韩东', '市第一人民医院', 4, 'URGENT', 'COMPATIBLE', '姜妍', DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE), 0, NULL, NULL, 0, NULL, DATE_ADD(DATE_SUB(CURDATE(), INTERVAL 1 DAY), INTERVAL '9:40' HOUR_MINUTE));

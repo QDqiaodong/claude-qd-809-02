@@ -1,0 +1,119 @@
+# 新仓固定的 docker-compose.yml（把 <repo> 换成仓名，其余不动）
+#
+# 设计口径（三条）：
+#   1. 构建必须快，且【第一次构建也快】—— backend/frontend 的 FROM 用依赖预热镜像
+#      （claude-qd-deps/maven:17 / claude-qd-deps/node:20，依赖已烘在镜像里，不用联网下载）
+#   2. 起停必须快 —— healthcheck 2s、mysql 在构建期就做完 initdb、不挂数据卷
+#   3. 多实例友好（SKILL.md 第 3 步硬要求）—— 不写 container_name、不写 image:、不写卷名、端口全走 .env
+#
+# 注意：mysql 官方镜像自带 `VOLUME /var/lib/mysql`，compose 会给它建一个匿名卷（不是这里写的），
+#       所以收摊一律用 `./clean.sh`（= docker compose down -v）把匿名卷一起删掉，
+services:
+  mysql:
+    build:
+      context: ./mysql
+      dockerfile: Dockerfile
+      args:
+        DOCKER_REGISTRY: ${DOCKER_REGISTRY}
+        MYSQL_DATABASE: ${MYSQL_DATABASE}
+        MYSQL_USER: ${MYSQL_USER}
+        MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+        MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    # 不写 image: / container_name:（多实例友好；compose 自动加项目名前缀）
+    ports:
+      - "${MYSQL_HOST}:${MYSQL_PORT}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_INITDB_SKIP_TZINFO: "1"
+      TZ: ${TZ}
+      LANG: ${LANG}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --character-set-client-handshake=false
+      - --init-connect=SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci
+      # 下面五条是纯提速（演示/出题场景，数据本来就一次性）
+      - --skip-log-bin
+      - --performance-schema=OFF
+      - --innodb-flush-log-at-trx-commit=2
+      - --innodb-doublewrite=0
+      - --innodb-buffer-pool-size=256M
+    # 不挂 volumes：数据目录已在镜像里，删容器即彻底干净
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 5s
+    networks:
+      - app-network
+
+  redis:
+    image: ${DOCKER_REGISTRY}redis:7-alpine
+    ports:
+      - "${REDIS_HOST}:${REDIS_PORT}:6379"
+    # 不挂卷（无状态），关掉 AOF 让启动更快
+    command: redis-server --appendonly no --save ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 40
+      start_period: 2s
+    networks:
+      - app-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        DOCKER_REGISTRY: ${DOCKER_REGISTRY}
+        DEPS_REGISTRY: ${DEPS_REGISTRY:-claude-qd-deps/}
+        BACKEND_INTERNAL_PORT: ${BACKEND_INTERNAL_PORT}
+    ports:
+      - "${BACKEND_HOST}:${BACKEND_PORT}:${BACKEND_INTERNAL_PORT}"
+    environment:
+      SERVER_PORT: "${BACKEND_INTERNAL_PORT}"
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      TZ: ${TZ}
+      LANG: ${LANG}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stop_grace_period: 3s
+    networks:
+      - app-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        DOCKER_REGISTRY: ${DOCKER_REGISTRY}
+        DEPS_REGISTRY: ${DEPS_REGISTRY:-claude-qd-deps/}
+    ports:
+      - "${FRONTEND_HOST}:${FRONTEND_PORT}:80"
+    depends_on:
+      - backend
+    stop_grace_period: 3s
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+# 注意：这里没有 volumes 段 —— 数据目录已烘进构建出来的 mysql 镜像、redis 无状态，都不需要持久化卷。
+# 但 mysql 基础镜像自带 VOLUME，会产生匿名卷 —— 所以收摊必须 `docker compose down -v`（见 clean.sh）。

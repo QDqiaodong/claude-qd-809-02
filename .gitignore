@@ -1,0 +1,9 @@
+target/
+!target/*.jar
+backend/target/
+node_modules/
+dist/
+.vscode/
+.idea/
+.DS_Store
+*.log

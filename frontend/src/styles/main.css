@@ -1,0 +1,823 @@
+/* 血站 · 采血供血与血液库存管理 —— 主色深玫 #880e4f */
+
+:root {
+  /* 主色与衍生色：Element Plus 主题色跟着改 */
+  --el-color-primary: #880e4f;
+  --el-color-primary-light-3: #ad2768;
+  --el-color-primary-light-5: #c2185b;
+  --el-color-primary-light-7: #d8407f;
+  --el-color-primary-light-8: #e8699a;
+  --el-color-primary-light-9: #f8bbd0;
+  --el-color-primary-dark-2: #560027;
+  --el-color-danger: #c62828;
+  --el-color-warning: #ef6c00;
+  --el-color-success: #2e7d32;
+
+  --bc-primary: #880e4f;
+  --bc-primary-soft: #f8bbd0;
+  --bc-ink: #3e2723;
+  --bc-sub: #8d6e63;
+  --bc-line: #efe3e8;
+  --bc-bg: #fdf7f9;
+  --bc-card: #ffffff;
+  --bc-radius: 14px;
+  --bc-shadow: 0 6px 20px rgba(136, 14, 79, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bc-bg);
+  color: var(--bc-ink);
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+}
+
+/* ===================== 外壳布局 ===================== */
+.bc-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 100vh;
+}
+
+.bc-topbar {
+  background: linear-gradient(90deg, #560027 0%, #880e4f 45%, #ad1457 100%);
+  color: #fff;
+  padding: 10px 20px 12px;
+  box-shadow: 0 2px 12px rgba(86, 0, 39, 0.35);
+}
+
+.bc-topbar-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.bc-brand-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: #fff;
+  color: var(--bc-primary);
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  letter-spacing: -1px;
+}
+
+.bc-brand-title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.bc-brand-sub {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.bc-topbar-kpis {
+  margin-left: auto;
+  display: flex;
+  gap: 18px;
+}
+
+.bc-topbar-kpi {
+  text-align: right;
+  line-height: 1.2;
+}
+
+.bc-topbar-kpi b {
+  display: block;
+  font-size: 18px;
+}
+
+.bc-topbar-kpi span {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+/* 顶部血型 chips —— 主导航维度 */
+.bc-chips {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.bc-chips-label {
+  font-size: 12px;
+  opacity: 0.8;
+  margin-right: 4px;
+}
+
+.bc-chip {
+  min-width: 58px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  transition: all 0.18s ease;
+  position: relative;
+}
+
+.bc-chip:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.bc-chip.active {
+  background: #fff;
+  color: var(--bc-primary);
+  border-color: #fff;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.18);
+}
+
+.bc-chip .dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff8a80;
+  margin-left: 5px;
+  vertical-align: middle;
+}
+
+.bc-chip.active .dot {
+  background: var(--bc-primary);
+}
+
+/* ===================== 主体：左侧二级菜单 + 内容 ===================== */
+.bc-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.bc-side {
+  width: 216px;
+  flex: 0 0 216px;
+  background: #fff;
+  border-right: 1px solid var(--bc-line);
+  padding: 14px 12px;
+  overflow-y: auto;
+}
+
+.bc-side-label {
+  font-size: 11px;
+  color: var(--bc-sub);
+  letter-spacing: 2px;
+  margin: 6px 6px 10px;
+}
+
+.bc-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+  color: var(--bc-ink);
+  margin-bottom: 6px;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+}
+
+.bc-menu-item:hover {
+  background: #fdeff5;
+}
+
+.bc-menu-item.active {
+  background: linear-gradient(90deg, #880e4f 0%, #ad1457 100%);
+  color: #fff;
+  box-shadow: var(--bc-shadow);
+}
+
+.bc-menu-seq {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: #f8bbd0;
+  color: var(--bc-primary);
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bc-menu-item.active .bc-menu-seq {
+  background: rgba(255, 255, 255, 0.28);
+  color: #fff;
+}
+
+.bc-menu-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bc-menu-sub {
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.bc-side-foot {
+  margin-top: 14px;
+  padding: 10px;
+  border-radius: 10px;
+  background: #fdf2f6;
+  color: var(--bc-sub);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.bc-content {
+  flex: 1;
+  min-width: 0;
+  padding: 16px 18px 26px;
+  overflow-y: auto;
+}
+
+/* ===================== 通用卡片 ===================== */
+.bc-panel {
+  background: var(--bc-card);
+  border-radius: var(--bc-radius);
+  box-shadow: var(--bc-shadow);
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.bc-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.bc-panel-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--bc-primary);
+}
+
+.bc-panel-sub {
+  font-size: 12px;
+  color: var(--bc-sub);
+}
+
+.bc-panel-head .spacer {
+  flex: 1;
+}
+
+.bc-kpis {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.bc-kpi {
+  flex: 1;
+  min-width: 108px;
+  background: #fff;
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: var(--bc-shadow);
+  border-left: 4px solid var(--bc-primary);
+}
+
+.bc-kpi b {
+  display: block;
+  font-size: 20px;
+  color: var(--bc-primary);
+}
+
+.bc-kpi span {
+  font-size: 12px;
+  color: var(--bc-sub);
+}
+
+.bc-kpi.danger {
+  border-left-color: var(--el-color-danger);
+}
+
+.bc-kpi.danger b {
+  color: var(--el-color-danger);
+}
+
+.bc-empty {
+  padding: 26px;
+  text-align: center;
+  color: var(--bc-sub);
+  font-size: 13px;
+}
+
+.bc-tagline {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.bc-alert {
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 12px;
+  background: #fdeff5;
+  color: var(--bc-primary);
+  margin-bottom: 10px;
+}
+
+.bc-alert.danger {
+  background: #ffebee;
+  color: #c62828;
+}
+
+/* ===================== 页面一：采血位状态盘 ===================== */
+.bc-board {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.bc-ring {
+  position: relative;
+  width: 520px;
+  height: 520px;
+  flex: 0 0 520px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%, #fff 0%, #fdf2f6 55%, #f8e6ee 100%);
+  border: 2px dashed #f0c9d8;
+}
+
+.bc-ring-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 176px;
+  height: 176px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #880e4f, #ad1457);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 26px rgba(136, 14, 79, 0.35);
+}
+
+.bc-ring-center b {
+  font-size: 30px;
+  line-height: 1.1;
+}
+
+.bc-ring-center span {
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.bc-station {
+  position: absolute;
+  width: 92px;
+  height: 92px;
+  margin-left: -46px;
+  margin-top: -46px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #e0e0e0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.bc-station:hover {
+  transform: scale(1.08);
+  box-shadow: 0 8px 18px rgba(136, 14, 79, 0.28);
+}
+
+.bc-station .code {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.bc-station .who {
+  font-size: 19px;
+  font-weight: 800;
+  margin-top: 2px;
+}
+
+.bc-station .meta {
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+.bc-station.idle {
+  border-style: dashed;
+  border-color: #bdbdbd;
+  color: #9e9e9e;
+  background: #fafafa;
+}
+
+.bc-station.occupied {
+  background: linear-gradient(160deg, #880e4f, #c2185b);
+  border-color: #560027;
+  color: #fff;
+}
+
+.bc-station.cleaning {
+  background: linear-gradient(160deg, #ffb74d, #f9a825);
+  border-color: #ef6c00;
+  color: #4e342e;
+}
+
+.bc-station.other {
+  background: #eceff1;
+  border: 1px dashed #cfd8dc;
+  color: #90a4ae;
+  opacity: 0.75;
+}
+
+.bc-board-side {
+  flex: 1;
+  min-width: 300px;
+}
+
+/* ===================== 页面二：标本检验流转轨道 ===================== */
+.bc-lane {
+  background: #fff;
+  border-radius: var(--bc-radius);
+  box-shadow: var(--bc-shadow);
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-left: 6px solid #bdbdbd;
+}
+
+.bc-lane.pending {
+  border-left-color: #78909c;
+}
+
+.bc-lane.testing {
+  border-left-color: #f9a825;
+}
+
+.bc-lane.released {
+  border-left-color: #2e7d32;
+}
+
+.bc-lane.scrapped {
+  border-left-color: #8d6e63;
+}
+
+.bc-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.bc-lane-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.bc-lane-count {
+  background: #f8bbd0;
+  color: var(--bc-primary);
+  border-radius: 999px;
+  padding: 1px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.bc-lane-body {
+  min-height: 96px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px;
+  border: 1px dashed #e6d3dc;
+  border-radius: 10px;
+  background: #fdf9fb;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.bc-lane-body.dragover {
+  background: #fdeff5;
+  border-color: var(--bc-primary);
+}
+
+/* 标本管：细长胶囊 + 条码纹 */
+.bc-tube {
+  width: 132px;
+  height: 44px;
+  border-radius: 22px;
+  background: linear-gradient(180deg, #fff 0%, #fce4ec 100%);
+  border: 1px solid #f2c3d5;
+  box-shadow: 0 3px 8px rgba(136, 14, 79, 0.14);
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  cursor: grab;
+  position: relative;
+  user-select: none;
+}
+
+.bc-tube:active {
+  cursor: grabbing;
+}
+
+.bc-tube .barcode {
+  width: 26px;
+  height: 28px;
+  border-radius: 3px;
+  background: repeating-linear-gradient(90deg, #3e2723 0 2px, #fff 2px 4px, #3e2723 4px 5px, #fff 5px 8px);
+  flex: 0 0 26px;
+}
+
+.bc-tube .info {
+  margin-left: 8px;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.bc-tube .code {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--bc-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bc-tube .who {
+  font-size: 11px;
+  color: var(--bc-sub);
+}
+
+.bc-tube .blood {
+  position: absolute;
+  right: 8px;
+  top: 12px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+  background: var(--bc-primary);
+  border-radius: 6px;
+  padding: 0 5px;
+}
+
+.bc-tube.dragging {
+  opacity: 0.45;
+}
+
+.bc-tube.positive {
+  background: linear-gradient(180deg, #fff 0%, #ffebee 100%);
+  border-color: #ef9a9a;
+}
+
+/* ===================== 页面三：血型 × 成分库存矩阵 ===================== */
+.bc-matrix-wrap {
+  overflow-x: auto;
+}
+
+table.bc-matrix {
+  border-collapse: separate;
+  border-spacing: 4px;
+  width: 100%;
+  min-width: 720px;
+}
+
+table.bc-matrix th {
+  font-size: 12px;
+  color: var(--bc-sub);
+  font-weight: 600;
+  padding: 6px 4px;
+}
+
+table.bc-matrix th.row-head {
+  width: 76px;
+  color: var(--bc-primary);
+  font-weight: 800;
+  font-size: 14px;
+}
+
+table.bc-matrix td.cell {
+  height: 74px;
+  border-radius: 10px;
+  text-align: center;
+  cursor: pointer;
+  border: 1px solid rgba(0, 0, 0, 0.04);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  position: relative;
+}
+
+table.bc-matrix td.cell:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 18px rgba(136, 14, 79, 0.22);
+}
+
+table.bc-matrix td.cell .bags {
+  font-size: 19px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+table.bc-matrix td.cell .unit {
+  font-size: 11px;
+  opacity: 0.9;
+}
+
+table.bc-matrix td.cell .exp {
+  font-size: 10px;
+  opacity: 0.9;
+  margin-top: 2px;
+}
+
+/* 库存格染色（深 → 浅） */
+td.cell.level-OK {
+  background: #f8bbd0;
+  color: #560027;
+}
+
+td.cell.level-NEAR {
+  background: #f06292;
+  color: #fff;
+}
+
+td.cell.level-WARN {
+  background: #d81b60;
+  color: #fff;
+}
+
+td.cell.level-LOW {
+  background: #ad1457;
+  color: #fff;
+}
+
+td.cell.level-EXPIRED {
+  background: #4e342e;
+  color: #ffcdd2;
+}
+
+.bc-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--bc-sub);
+}
+
+.bc-legend .item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bc-legend .swatch {
+  width: 26px;
+  height: 12px;
+  border-radius: 3px;
+  display: inline-block;
+}
+
+/* ===================== 页面四：交叉配血对照卡 ===================== */
+.bc-cross {
+  display: flex;
+  gap: 14px;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.bc-cross-col {
+  flex: 1 1 300px;
+  min-width: 280px;
+  background: #fff;
+  border-radius: var(--bc-radius);
+  box-shadow: var(--bc-shadow);
+  padding: 14px 16px;
+}
+
+.bc-cross-col.supply {
+  border-top: 4px solid var(--bc-primary);
+}
+
+.bc-cross-col.demand {
+  border-top: 4px solid #1565c0;
+}
+
+.bc-cross-title {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  color: var(--bc-sub);
+}
+
+.bc-cross-row {
+  display: flex;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--bc-line);
+  font-size: 13px;
+}
+
+.bc-cross-row .k {
+  width: 84px;
+  color: var(--bc-sub);
+}
+
+.bc-cross-row .v {
+  font-weight: 600;
+}
+
+.bc-match-mid {
+  flex: 0 0 230px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  border-radius: var(--bc-radius);
+  box-shadow: var(--bc-shadow);
+  padding: 16px 14px;
+}
+
+.bc-match-btn {
+  width: 100%;
+  margin: 6px 0;
+  height: 52px;
+  font-size: 15px;
+  font-weight: 700;
+  border-radius: 10px;
+  border: 2px solid #e0e0e0;
+  background: #fff;
+  cursor: pointer;
+  color: #616161;
+  transition: all 0.15s ease;
+}
+
+.bc-match-btn:hover {
+  border-color: var(--bc-primary);
+}
+
+.bc-match-btn.active-compatible {
+  background: #2e7d32;
+  border-color: #2e7d32;
+  color: #fff;
+}
+
+.bc-match-btn.active-suspect {
+  background: #f9a825;
+  border-color: #f9a825;
+  color: #4e342e;
+}
+
+.bc-match-btn.active-incompatible {
+  background: #c62828;
+  border-color: #c62828;
+  color: #fff;
+}
+
+.bc-block-bar {
+  width: 100%;
+  background: #c62828;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 10px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* 表格微调 */
+.el-table {
+  font-size: 13px;
+}
+
+.el-drawer__body {
+  padding-top: 0;
+}
